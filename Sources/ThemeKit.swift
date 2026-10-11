@@ -42,7 +42,7 @@ final class AppTheme: ObservableObject {
     var accent: Color { Color(hex: accentHex) }
     var colorScheme: ColorScheme { isDark ? .dark : .light }
 
-    static let presets: [String] = ["2ED9C3", "FFA773", "64CCFF", "B366FF", "FF66B2", "90EE90", "FFCC00", "FF453A", "FFFFFF"]
+    static let presets: [String] = ["FF9A1F", "2ED9C3", "FFA773", "64CCFF", "B366FF", "FF66B2", "90EE90", "FFCC00", "FF453A", "FFFFFF"]
 }
 
 // MARK: - Palette button (top bar)

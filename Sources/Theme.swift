@@ -10,7 +10,7 @@ nonisolated enum Theme {
     static let keyAccent     = "theme_accent_hex"
     static let keyDark       = "theme_dark"
     static let keyBackground = "theme_background"
-    static let defaultAccent = "2ED9C3"
+    static let defaultAccent = "FF9A1F"
 
     static var isDark: Bool {
         UserDefaults.standard.object(forKey: keyDark) == nil ? true : UserDefaults.standard.bool(forKey: keyDark)

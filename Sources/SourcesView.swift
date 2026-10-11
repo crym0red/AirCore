@@ -1020,7 +1020,16 @@ struct SourceIcon: View {
     let url: URL?
     let side: CGFloat
     var fallback: String = ""
-    var body: some View { CachedIcon(url: url, side: side, fallback: fallback) }
+    var body: some View {
+        if url == nil, fallback.lowercased() == "airshare", let logo = UIImage(named: "airshare_logo") {
+            Image(uiImage: logo)
+                .resizable().scaledToFill()
+                .frame(width: side, height: side)
+                .clipShape(RoundedRectangle(cornerRadius: side * 0.225, style: .continuous))
+        } else {
+            CachedIcon(url: url, side: side, fallback: fallback)
+        }
+    }
 }
 
 // MARK: - Inbox + downloader (progress-reporting)

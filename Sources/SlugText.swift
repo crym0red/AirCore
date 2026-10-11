@@ -149,7 +149,7 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
                         HStack(spacing: 12) {
-                            brandMark(side: 48, radius: 14)
+                            brandMark(side: 40, radius: 12)
                                 .scaleEffect(logoScale)
                             Text("AirShare")
                                 .font(.system(size: 22, weight: .bold))
@@ -162,25 +162,25 @@ struct OnboardingView: View {
                             .foregroundStyle(.white.opacity(0.55))
                     }
                     .opacity(logoOpacity)
-                    .padding(.top, 26)
+                    .padding(.top, 8)
 
                     (Text("Sign anything.\n").foregroundColor(.white)
                      + Text("Keep it local.").foregroundColor(accent))
-                        .font(.system(size: 44, weight: .bold))
+                        .font(.system(size: 34, weight: .bold))
                         .lineSpacing(-2)
-                        .padding(.top, 40)
+                        .padding(.top, 18)
                         .opacity(logoOpacity)
 
                     Text("Your signing environment lives on this device. No account needed.")
-                        .font(.system(size: 16))
+                        .font(.system(size: 14))
                         .foregroundStyle(.white.opacity(0.62))
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: 310, alignment: .leading)
-                        .padding(.top, 14)
+                        .padding(.top, 8)
                         .opacity(logoOpacity)
 
                     devicePass
-                        .padding(.top, 30)
+                        .padding(.top, 18)
                         .offset(y: featuresOffset)
                         .opacity(featuresOpacity)
 
@@ -198,7 +198,7 @@ struct OnboardingView: View {
 
                         HStack(alignment: .top, spacing: 0) {
                             linkTile(title: "AirShare.lol", url: "https://airshare.lol") {
-                                brandMark(side: 38, radius: 10)
+                                brandMark(side: 32, radius: 9)
                             }
                             linkTile(title: "@FastDecryptBot", url: "https://t.me/FastDecryptBot", small: true) {
                                 assetTile("fastdecrypt_logo", fallback: "scissors")
@@ -210,38 +210,38 @@ struct OnboardingView: View {
                                 assetTile("delvek_logo", fallback: "pawprint.fill")
                             }
                         }
-                        .padding(.vertical, 14)
+                        .padding(.vertical, 8)
                         Divider().overlay(Color.white.opacity(0.14))
 
                         HStack(alignment: .center, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("& even more…")
-                                    .font(.system(size: 22, weight: .bold))
+                                    .font(.system(size: 19, weight: .bold))
                                     .foregroundStyle(.white)
                                 Text("No account required to start signing.")
-                                    .font(.system(size: 14))
+                                    .font(.system(size: 12))
                                     .foregroundStyle(.white.opacity(0.55))
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer(minLength: 4)
                             Button(action: handleGetStarted) {
                                 Text("Continue")
-                                    .font(.system(size: 20, weight: .semibold))
+                                    .font(.system(size: 18, weight: .semibold))
                                     .foregroundStyle(.black)
-                                    .frame(width: 148, height: 56)
+                                    .frame(width: 136, height: 48)
                                     .background(Color(white: 0.95), in: Capsule())
                             }
                             .scaleEffect(buttonScale)
                             .opacity(buttonOpacity)
                         }
-                        .padding(.top, 16)
+                        .padding(.top, 10)
                     }
-                    .padding(.top, 22)
+                    .padding(.top, 8)
                     .offset(y: featuresOffset)
                     .opacity(featuresOpacity)
 
-                    Spacer(minLength: 20)
-                    Color.clear.frame(height: 14)
+                    Spacer(minLength: 8)
+                    Color.clear.frame(height: 8)
                 }
                 .padding(.horizontal, 22)
                 .frame(minHeight: geo.size.height)
@@ -290,7 +290,7 @@ struct OnboardingView: View {
                         .kerning(1.6)
                         .foregroundStyle(.white.opacity(0.45))
                     Text(mdid)
-                        .font(.system(size: 24, weight: .bold, design: .monospaced))
+                        .font(.system(size: 20, weight: .bold, design: .monospaced))
                         .kerning(1.5)
                         .foregroundStyle(.white)
                         .lineLimit(1)
@@ -306,11 +306,11 @@ struct OnboardingView: View {
                             .foregroundStyle(accent)
                     }
                 }
-                .frame(width: 34, height: 58)
+                .frame(width: 26, height: 44)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 18)
-            .padding(.bottom, 16)
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
 
             HStack(spacing: 0) {
                 Circle().fill(passBG).frame(width: 18, height: 18).offset(x: -9)
@@ -324,7 +324,7 @@ struct OnboardingView: View {
                     Circle().fill(Color.green).frame(width: 8, height: 8)
                         .shadow(color: .green, radius: 5)
                     Text("Identity detected")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.green)
                 }
                 Spacer(minLength: 8)
@@ -334,9 +334,9 @@ struct OnboardingView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 14)
-            .padding(.bottom, 16)
+            .padding(.horizontal, 18)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
         }
         .background(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -351,21 +351,21 @@ struct OnboardingView: View {
     private func infoRow(icon: String, title: String, text: String, tint: Color, highlight: Bool = false) -> some View {
         HStack(alignment: .top, spacing: 16) {
             Image(systemName: icon)
-                .font(.system(size: 24, weight: .regular))
+                .font(.system(size: 20, weight: .regular))
                 .foregroundStyle(tint)
-                .frame(width: 34, height: 34)
+                .frame(width: 28, height: 28)
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(highlight ? tint : .white)
                 Text(text)
-                    .font(.system(size: 15))
+                    .font(.system(size: 13))
                     .foregroundStyle(.white.opacity(0.62))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 14)
+        .padding(.vertical, 9)
     }
 
     private func assetTile(_ name: String, fallback: String) -> some View {
@@ -376,7 +376,7 @@ struct OnboardingView: View {
                 ZStack { Color(white: 0.12); Image(systemName: fallback).font(.system(size: 18, weight: .bold)).foregroundStyle(.white) }
             }
         }
-        .frame(width: 38, height: 38)
+        .frame(width: 32, height: 32)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
     }
@@ -388,16 +388,16 @@ struct OnboardingView: View {
                 .font(.system(size: 18, weight: .bold))
                 .foregroundStyle(.white)
         }
-        .frame(width: 38, height: 38)
+        .frame(width: 32, height: 32)
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
     }
 
     @ViewBuilder
     private func linkTile<Icon: View>(title: String, url: String?, small: Bool = false, @ViewBuilder icon: () -> Icon) -> some View {
-        let content = VStack(spacing: 8) {
+        let content = VStack(spacing: 5) {
             icon()
             Text(title)
-                .font(.system(size: small ? 11 : 14, weight: .semibold))
+                .font(.system(size: small ? 10 : 12, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
