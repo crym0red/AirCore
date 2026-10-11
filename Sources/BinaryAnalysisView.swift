@@ -135,7 +135,7 @@ struct BinaryAnalysisView: View {
     private func metadataSection(_ title: String, _ evidence: BinaryAnalysisReport.MetadataEvidence) -> some View {
         Section(title) {
             if !evidence.available {
-                Text("Unavailable — \(evidence.note ?? \"not present in the binary\")").foregroundStyle(.orange)
+                Text("Unavailable — \(evidence.note ?? "not present in the binary")").foregroundStyle(.orange)
             } else {
                 let values = query.isEmpty ? evidence.values : evidence.values.filter { $0.localizedCaseInsensitiveContains(query) }
                 let shown = min(values.count, 500)
