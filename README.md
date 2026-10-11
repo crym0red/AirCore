@@ -1,19 +1,3 @@
-# CLI Compatibility Harness
-
-This package provides a repository-local compatibility test.
-
-It deliberately does **not** replace macOS's `/System/Library/CoreServices/SystemVersion.plist`,
-patch `buddy3`, redirect its filesystem calls, or alter FairPlay/DRM behavior.
-
-The root `SystemVersion.plist` is consumed only by `tools/version_compat_shim.py`.
-
-Supported test profiles in the shim:
-- 15.4 -> iOS-15.4
-- 16.2 -> iOS-16.2
-- 26.0.1 -> iOS-26.0.1
-
-You can also provide `requested_version` when manually dispatching the workflow.
-
 ## ADID identity
 
 New installations mint a cryptographically-random `AS-XXXXXX-XX` ADID on first use. The ID is stored in Keychain and is not derived from hardware or display fingerprints.
@@ -39,3 +23,5 @@ Analysis Center currently exposes:
 - One-tap navigation back to Disassembler, CFG, and Pseudocode
 
 Patch proposals are deliberately kept as an in-memory/local manifest in this viewer; the source binary is not modified by opening the analysis UI.
+
+yur
