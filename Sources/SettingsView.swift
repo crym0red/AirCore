@@ -77,7 +77,7 @@ struct SettingsView: View {
                             SettingsLink(icon: "globe", imageName: "airshare_logo", title: "AirShare",
                                          subtitle: "airshare.lol | Official site",
                                          url: URL(string: "https://airshare.lol")!)
-                            SettingsLink(icon: "network", imageName: "delvek_logo", title: "Delvek.net",
+                            SettingsLink(icon: "network", imageName: "delvek_logo", imageURL: URL(string: "https://delvek.net/img/delvek4.png"), title: "Delvek.net",
                                          subtitle: "delvek.net | Repo and support",
                                          url: URL(string: "https://delvek.net")!)
                         }
@@ -284,6 +284,7 @@ private let rowHeight: CGFloat = 64
 private struct RowBody: View {
     let icon: String
     var imageName: String? = nil
+    var imageURL: URL? = nil
     let title: String
     let subtitle: String
     var trailingIcon: String = "arrow.up.forward.square"
@@ -298,6 +299,18 @@ private struct RowBody: View {
                         .resizable().scaledToFill()
                         .frame(width: 38, height: 38)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                } else if let imageURL {
+                    AsyncImage(url: imageURL) { phase in
+                        if let img = phase.image {
+                            img.resizable().scaledToFill()
+                        } else {
+                            Image(systemName: icon)
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                    .frame(width: 38, height: 38)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 } else {
                     Image(systemName: icon)
                         .font(.system(size: 17, weight: .semibold))
@@ -340,6 +353,7 @@ private struct SettingsRow: View {
 private struct SettingsLink: View {
     let icon: String
     var imageName: String? = nil
+    var imageURL: URL? = nil
     let title: String
     let subtitle: String
     let url: URL
@@ -347,7 +361,7 @@ private struct SettingsLink: View {
 
     var body: some View {
         Button { openURL(url) } label: {
-            RowBody(icon: icon, imageName: imageName, title: title, subtitle: subtitle, trailingIcon: "safari")
+            RowBody(icon: icon, imageName: imageName, imageURL: imageURL, title: title, subtitle: subtitle, trailingIcon: "safari")
         }
         .buttonStyle(RowPressStyle())
     }
