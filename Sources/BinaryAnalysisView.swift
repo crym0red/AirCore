@@ -33,7 +33,7 @@ struct BinaryAnalysisView: View {
             .navigationTitle("Binary Analysis")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
             }
