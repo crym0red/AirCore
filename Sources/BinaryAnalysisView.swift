@@ -19,7 +19,11 @@ struct BinaryAnalysisView: View {
                 if loading {
                     VStack(spacing: 12) { ProgressView(); Text("Parsing Mach-O locally…").foregroundStyle(Theme.subtle) }
                 } else if let error {
-                    ContentUnavailableView("Analysis unavailable", systemImage: "exclamationmark.triangle", description: Text(error))
+                    VStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle").font(.system(size: 34)).foregroundStyle(.orange)
+                        Text("Analysis unavailable").font(.headline).foregroundStyle(Theme.text)
+                        Text(error).font(.caption).foregroundStyle(Theme.subtle).multilineTextAlignment(.center)
+                    }.padding(24)
                 } else if let report {
                     VStack(spacing: 0) {
                         tabPicker
@@ -33,7 +37,7 @@ struct BinaryAnalysisView: View {
             .navigationTitle("Binary Analysis")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") { dismiss() }
                 }
             }
