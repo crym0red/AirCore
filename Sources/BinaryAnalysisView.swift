@@ -30,7 +30,7 @@ struct BinaryAnalysisView: View {
                     }
                 }
             }
-                      .navigationTitle("Binary Analysis")
+            .navigationTitle("Binary Analysis")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -39,19 +39,9 @@ struct BinaryAnalysisView: View {
                     }
                 }
             }
-        .preferredColorScheme(.dark)
-        .task { await load() }
-        .searchable(text: $query, prompt: "Search metadata")
-}
-    }
-        
-
-    @ToolbarContentBuilder
-    private var binaryAnalysisToolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
-            Button("Done") {
-                dismiss()
-            }
+            .preferredColorScheme(.dark)
+            .task { await load() }
+            .searchable(text: $query, prompt: "Search metadata")
         }
     }
 
