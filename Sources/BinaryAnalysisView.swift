@@ -42,7 +42,9 @@ struct BinaryAnalysisView: View {
         .preferredColorScheme(.dark)
         .task { await load() }
         .searchable(text: $query, prompt: "Search metadata")
+}
     }
+        
 
     @ToolbarContentBuilder
     private var binaryAnalysisToolbar: some ToolbarContent {
