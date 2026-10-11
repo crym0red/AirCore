@@ -1,0 +1,278 @@
+//
+//  ZefvClient.swift
+//  Account client for the AirShare backend (airshare.lol/app/v1). Registration/login are
+//  OPTIONAL — the app works fully as a guest keyed on the device MDID. An
+//  account links this ADID to a username + role so staff tools follow you
+//  across reinstalls and devices.
+//
+//  All requests carry the shared X-OTA-Token (ServerConfig.certSourceToken).
+//  The per-user session token is stored in the Keychain.
+//
+
+import Foundation
+
+@MainActor
+final class ZefvAccount: ObservableObject {
+    static let shared = ZefvAccount()
+
+    @Published private(set) var username: String?
+    @Published private(set) var email: String?
+    @Published private(set) var style: UserStyle = UserStyle.load()
+    @Published private(set) var signsToday: Int = UserDefaults.standard.integer(forKey: "zefv_signs_today")
+    @Published private(set) var signsTotal: Int = UserDefaults.standard.integer(forKey: "zefv_signs_total")
+    @Published private(set) var role: UserRole = .member
+    @Published private(set) var busy = false
+    @Published var lastError: String?
+    @Published var panelShown = false
+
+    private static let kSession  = "zefv_session_token"
+    private static let kUsername = "zefv_username"
+    private static let kLastAuthenticatedAt = "zefv_last_authenticated_at"
+
+    var lastAuthenticatedAt: Date? {
+        let value = UserDefaults.standard.double(forKey: Self.kLastAuthenticatedAt)
+        return value > 0 ? Date(timeIntervalSince1970: value) : nil
+    }
+
+    var isLoggedIn: Bool { username != nil }
+    var sessionToken: String? { Keychain.get(Self.kSession) }
+
+    private init() {
+        username = Keychain.get(Self.kUsername)
+        if let raw = Keychain.get("zefv_role"), let r = UserRole(rawValue: raw) { role = r }
+    }
+
+    // MARK: - Endpoint base — the PHP account API lives on apii (api.zefv.dev is a router)
+
+    /// AirShare backend (Node). Override with UserDefaults "as_api_base" if it ever moves.
+    nonisolated static let defaultBase = "https://airshare.lol/app/v1/"
+    nonisolated static var apiBase: String {
+        let v = UserDefaults.standard.string(forKey: "as_api_base") ?? ""
+        return v.isEmpty ? defaultBase : (v.hasSuffix("/") ? v : v + "/")
+    }
+    private func base() -> URL? {
+        URL(string: Self.apiBase)
+    }
+    private func endpoint(_ path: String) -> URL? { base()?.appendingPathComponent(path) }
+
+    private func get(_ path: String, _ query: [String: String]) async throws -> [String: Any] {
+        guard let url = endpoint(path), var c = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw Err.badURL }
+        c.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
+        guard let u = c.url else { throw Err.badURL }
+        var req = URLRequest(url: u)
+        req.timeoutInterval = 15
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue(ServerConfig.certSourceToken, forHTTPHeaderField: "X-OTA-Token")
+        let (d, r) = try await URLSession.shared.data(for: req)
+        let obj = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+        let code = (r as? HTTPURLResponse)?.statusCode ?? 0
+        if code >= 400 { throw Err.server((obj["error"] as? String) ?? "Server error (\(code))") }
+        return obj
+    }
+
+    private func post(_ path: String, _ payload: [String: Any]) async throws -> [String: Any] {
+        guard let url = endpoint(path) else { throw Err.badURL }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 15
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(ServerConfig.certSourceToken, forHTTPHeaderField: "X-OTA-Token")
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (d, r) = try await URLSession.shared.data(for: req)
+        let obj = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+        let code = (r as? HTTPURLResponse)?.statusCode ?? 0
+        if code >= 400 { throw Err.server((obj["error"] as? String) ?? "Server error (\(code))") }
+        return obj
+    }
+
+    private func accountAPIGet(_ query: [String: String]) async throws -> [String: Any] {
+        guard let base = endpoint("account"), var c = URLComponents(url: base, resolvingAgainstBaseURL: false) else { throw Err.badURL }
+        c.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
+        guard let url = c.url else { throw Err.badURL }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 15
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        if let t = query["token"] { req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization") }
+        let (d, r) = try await URLSession.shared.data(for: req)
+        let obj = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+        let code = (r as? HTTPURLResponse)?.statusCode ?? 0
+        if code >= 400 { throw Err.server((obj["error"] as? String) ?? "Server error (\(code))") }
+        return obj
+    }
+
+    private func accountAPIPost(_ payload: [String: Any]) async throws -> [String: Any] {
+        guard let url = endpoint("account") else { throw Err.badURL }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 15
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(ServerConfig.certSourceToken, forHTTPHeaderField: "X-OTA-Token")
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (d, r) = try await URLSession.shared.data(for: req)
+        let obj = (try? JSONSerialization.jsonObject(with: d) as? [String: Any]) ?? [:]
+        let code = (r as? HTTPURLResponse)?.statusCode ?? 0
+        if code >= 400 { throw Err.server((obj["error"] as? String) ?? "Server error (\(code))") }
+        return obj
+    }
+
+    // MARK: - Actions
+
+    func register(username u: String, password p: String) async -> Bool {
+        await run { try await self.post("register", ["username": u, "password": p, "adid": MDID.current]) }
+    }
+    func login(username u: String, password p: String) async -> Bool {
+        await run { try await self.post("login", ["username": u, "password": p, "adid": MDID.current]) }
+    }
+
+    private func run(_ call: @escaping () async throws -> [String: Any]) async -> Bool {
+        busy = true; lastError = nil; defer { busy = false }
+        do {
+            let o = try await call()
+            guard let tok = o["token"] as? String, let name = o["username"] as? String else {
+                lastError = "Malformed response"; return false
+            }
+            let r = UserRole(rawValue: (o["role"] as? String) ?? "member") ?? .member
+            _ = Keychain.set(Self.kSession, tok)
+            _ = Keychain.set(Self.kUsername, name)
+            _ = Keychain.set("zefv_role", r.rawValue)
+            username = name; role = r
+            // The account owns an ADID: adopt it so staff roles follow you to a new device / reinstall.
+            if let a = (o["adid"] as? String)?.uppercased(), MDIDManager.shared.isValid(a), a != MDID.current { _ = MDID.replace(a) }
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.kLastAuthenticatedAt)
+            await StaffGate.shared.refresh()
+            WidgetDataManager.shared.refresh()
+            return true
+        } catch { lastError = (error as? Err)?.message ?? error.localizedDescription; return false }
+    }
+
+    /// Pull username/role/email for the stored session; clears the session if the server rejects it.
+    func refreshProfile() async {
+        guard let tok = sessionToken, !tok.isEmpty else { return }
+        do {
+            let o = try await accountAPIGet(["token": tok])
+            if let name = o["username"] as? String { username = name; _ = Keychain.set(Self.kUsername, name) }
+            email = (o["email"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            var st = UserStyle(json: o["style"] as? [String: Any])
+            st.badges = (o["badges"] as? [String]) ?? []
+            style = st; st.save()
+            let r = UserRole(rawValue: (o["role"] as? String) ?? "member") ?? .member
+            role = r; _ = Keychain.set("zefv_role", r.rawValue)
+            await StaffGate.shared.refresh()
+        } catch let e as Err {
+            if case .server(let m) = e, m.lowercased().contains("session") { await clearLocal() }
+            lastError = e.message
+        } catch { lastError = error.localizedDescription }
+    }
+
+    /// Registered-only cosmetics: username color / rainbow / animated background.
+    func setStyle(_ st: UserStyle) async -> Bool {
+        guard let tok = sessionToken else { return false }
+        busy = true; lastError = nil; defer { busy = false }
+        do {
+            _ = try await post("account", ["action": "set_style", "token": tok,
+                                               "color": st.colorHex, "rainbow": st.rainbow ? 1 : 0, "gif": st.gifURL,
+                                               "font": st.fontName, "size": st.sizeStep])
+            var saved = st; saved.badges = style.badges
+            style = saved; saved.save(); return true
+        } catch { lastError = (error as? Err)?.message ?? error.localizedDescription; return false }
+    }
+
+    // MARK: - Sign counter (aesthetic only — no limits)
+
+    private func applyCounts(_ o: [String: Any]) {
+        if let t = o["today"] as? Int { signsToday = t; UserDefaults.standard.set(t, forKey: "zefv_signs_today") }
+        if let t = o["total"] as? Int { signsTotal = t; UserDefaults.standard.set(t, forKey: "zefv_signs_total") }
+        WidgetDataManager.shared.refresh()
+    }
+    func refreshSignCounts() async {
+        do {
+            let o = try await get("quota", ["adid": StaffGate.shared.mdid])
+            applyCounts(o)
+        } catch {
+            lastError = (error as? Err)?.message ?? error.localizedDescription
+        }
+    }
+    /// Fire-and-forget after a successful sign.
+    func recordSign() {
+        signsToday += 1; signsTotal += 1
+        Task { if let o = try? await post("quota", ["adid": StaffGate.shared.mdid, "action": "consume"]) { applyCounts(o) } }
+    }
+
+    /// Admin-only ADID reassignment for the currently authenticated account.
+    /// The server must atomically update the account ADID and any role/allowlist
+    /// mapping before returning the canonical value. Only then do we update the
+    /// local Keychain value and re-check the role against the new MDID.
+    func adminChangeOwnMDID(_ requested: String) async -> Bool {
+        guard role == .admin || StaffGate.shared.role == .admin, let tok = sessionToken else { return false }
+        let value = requested.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard MDIDManager.shared.isValid(value) else {
+            lastError = "ADID must look like AS-XXXXXX-XX"
+            return false
+        }
+        busy = true; lastError = nil; defer { busy = false }
+        do {
+            let o = try await accountAPIPost([
+                "action": "admin_set_mdid",
+                "token": tok,
+                "mdid": value
+            ])
+            guard let canonical = (o["mdid"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+                  MDIDManager.shared.isValid(canonical),
+                  MDID.replace(canonical) else {
+                lastError = "Server returned an invalid ADID"
+                return false
+            }
+            await refreshProfile()
+            await StaffGate.shared.refresh()
+            return true
+        } catch {
+            lastError = (error as? Err)?.message ?? error.localizedDescription
+            return false
+        }
+    }
+
+    func setUsername(_ n: String) async -> Bool {
+        guard let tok = sessionToken else { return false }
+        busy = true; lastError = nil; defer { busy = false }
+        do {
+            let o = try await post("account", ["action": "set_username", "token": tok, "username": n])
+            let name = (o["username"] as? String) ?? n
+            username = name; _ = Keychain.set(Self.kUsername, name)
+            return true
+        } catch { lastError = (error as? Err)?.message ?? error.localizedDescription; return false }
+    }
+
+    func setEmail(_ e: String) async -> Bool {
+        guard let tok = sessionToken else { return false }
+        busy = true; lastError = nil; defer { busy = false }
+        do { _ = try await post("account", ["action": "set_email", "token": tok, "email": e]); email = e.isEmpty ? nil : e; return true }
+        catch { lastError = (error as? Err)?.message ?? error.localizedDescription; return false }
+    }
+
+    func changePassword(current: String, new n: String) async -> Bool {
+        guard let tok = sessionToken else { return false }
+        busy = true; lastError = nil; defer { busy = false }
+        do {
+            let o = try await post("account", ["action": "change_password", "token": tok, "current_password": current, "new_password": n])
+            if let t = o["token"] as? String, !t.isEmpty { _ = Keychain.set(Self.kSession, t) }
+            return true
+        }
+        catch { lastError = (error as? Err)?.message ?? error.localizedDescription; return false }
+    }
+
+    private func clearLocal() async {
+        _ = Keychain.set(Self.kSession, "")
+        _ = Keychain.set(Self.kUsername, "")
+        _ = Keychain.set("zefv_role", "")
+        username = nil; email = nil; role = .member; style = .none; UserStyle.none.save()
+    }
+
+    func logout() async {
+        if let tok = sessionToken { _ = try? await post("account", ["action": "logout", "token": tok]) }
+        await clearLocal()
+    }
+
+    enum Err: Error { case badURL, server(String)
+        var message: String { switch self { case .badURL: return "Bad URL"; case .server(let m): return m } }
+    }
+}
