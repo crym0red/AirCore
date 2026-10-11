@@ -61,7 +61,7 @@ struct OnboardingView: View {
     private let maxRetries = 3
     @State private var attempts = 0
 
-    private var accent: Color { Theme.accent }
+    private var accent: Color { Color(red: 1.0, green: 0.60, blue: 0.12) }   // onboarding is orange (AirShare brand)
     private var mdid: String { MDID.current }
 
     var body: some View {
@@ -184,43 +184,64 @@ struct OnboardingView: View {
                         .offset(y: featuresOffset)
                         .opacity(featuresOpacity)
 
-                    HStack(alignment: .top, spacing: 10) {
-                        featureTile(icon: "clock.arrow.circlepath", color: .green,
-                                    title: "History", sub: "Stays on this device")
-                        featureTile(icon: "bolt.fill", color: .orange,
-                                    title: "Local ZSign", sub: "Nothing leaves your phone")
-                        featureTile(icon: "lock.shield.fill", color: Color(red: 0.29, green: 0.64, blue: 1),
-                                    title: "Certs", sub: "Protected by the store")
+                    VStack(spacing: 0) {
+                        infoRow(icon: "clock.arrow.circlepath", title: "LOCAL HISTORY",
+                                text: "Your signing history stays on this device.", tint: Color(red: 1, green: 0.84, blue: 0.62))
+                        Divider().overlay(Color.white.opacity(0.14))
+                        infoRow(icon: "bolt.fill", title: "LOCAL ZSIGN ENGINE",
+                                text: "No signing request leaves this device.", tint: Color(red: 1, green: 0.84, blue: 0.62))
+                        Divider().overlay(Color.white.opacity(0.14))
+                        infoRow(icon: "checkmark.circle", title: "PROTECTED CERTIFICATES",
+                                text: "Certificates remain protected by the existing certificate store.",
+                                tint: Color(red: 0.6, green: 0.93, blue: 0.68), highlight: true)
+                        Divider().overlay(Color.white.opacity(0.14))
+
+                        HStack(alignment: .top, spacing: 0) {
+                            linkTile(title: "AirShare.lol", url: "https://airshare.lol") {
+                                brandMark(side: 38, radius: 10)
+                            }
+                            linkTile(title: "@FastDecryptBot", url: "https://t.me/FastDecryptBot", small: true) {
+                                assetTile("fastdecrypt_logo", fallback: "scissors")
+                            }
+                            linkTile(title: "Donate", url: nil) {
+                                symbolTile("bitcoinsign", Color(red: 0.2, green: 0.2, blue: 0.24))
+                            }
+                            linkTile(title: "DELvEK.NET", url: "https://delvek.net") {
+                                assetTile("delvek_logo", fallback: "pawprint.fill")
+                            }
+                        }
+                        .padding(.vertical, 14)
+                        Divider().overlay(Color.white.opacity(0.14))
+
+                        HStack(alignment: .center, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("& even more…")
+                                    .font(.system(size: 22, weight: .bold))
+                                    .foregroundStyle(.white)
+                                Text("No account required to start signing.")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(.white.opacity(0.55))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 4)
+                            Button(action: handleGetStarted) {
+                                Text("Continue")
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundStyle(.black)
+                                    .frame(width: 148, height: 56)
+                                    .background(Color(white: 0.95), in: Capsule())
+                            }
+                            .scaleEffect(buttonScale)
+                            .opacity(buttonOpacity)
+                        }
+                        .padding(.top, 16)
                     }
-                    .padding(.top, 16)
+                    .padding(.top, 22)
                     .offset(y: featuresOffset)
                     .opacity(featuresOpacity)
 
-                    Spacer(minLength: 28)
-
-                    Button(action: handleGetStarted) {
-                        HStack(spacing: 10) {
-                            Text("Continue")
-                                .font(.system(size: 18, weight: .bold))
-                            Image(systemName: "arrow.right")
-                                .font(.system(size: 17, weight: .bold))
-                        }
-                        .foregroundStyle(Color(red: 0.01, green: 0.07, blue: 0.07))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 58)
-                        .background(accent, in: Capsule())
-                        .shadow(color: accent.opacity(0.35), radius: 17, y: 10)
-                    }
-                    .scaleEffect(buttonScale)
-                    .opacity(buttonOpacity)
-
-                    Text("AirShare · Local ZSign API · AirShare")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .kerning(0.8)
-                        .foregroundStyle(.white.opacity(0.4))
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 16)
-                        .padding(.bottom, 20)
+                    Spacer(minLength: 20)
+                    Color.clear.frame(height: 14)
                 }
                 .padding(.horizontal, 22)
                 .frame(minHeight: geo.size.height)
@@ -276,13 +297,16 @@ struct OnboardingView: View {
                         .minimumScaleFactor(0.6)
                 }
                 Spacer(minLength: 8)
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(accent.opacity(0.14))
-                    Image(systemName: "iphone.gen3")
-                        .font(.system(size: 22, weight: .regular))
-                        .foregroundStyle(accent)
+                Group {
+                    if let phone = UIImage(named: "iphone_render") {
+                        Image(uiImage: phone).resizable().scaledToFit()
+                    } else {
+                        Image(systemName: "iphone.gen3")
+                            .font(.system(size: 22, weight: .regular))
+                            .foregroundStyle(accent)
+                    }
                 }
-                .frame(width: 44, height: 44)
+                .frame(width: 34, height: 58)
             }
             .padding(.horizontal, 20)
             .padding(.top, 18)
@@ -324,30 +348,66 @@ struct OnboardingView: View {
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
-    private func featureTile(icon: String, color: Color, title: String, sub: String) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+    private func infoRow(icon: String, title: String, text: String, tint: Color, highlight: Bool = false) -> some View {
+        HStack(alignment: .top, spacing: 16) {
             Image(systemName: icon)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(height: 24)
-            Text(title)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.top, 14)
-            Text(sub)
-                .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.55))
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 3)
+                .font(.system(size: 24, weight: .regular))
+                .foregroundStyle(tint)
+                .frame(width: 34, height: 34)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(highlight ? tint : .white)
+                Text(text)
+                    .font(.system(size: 15))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 14)
-        .padding(.bottom, 16)
-        .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
-        .background(Color(red: 0.05, green: 0.067, blue: 0.063), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
-            .strokeBorder(Color.white.opacity(0.07), lineWidth: 1))
+        .padding(.vertical, 14)
+    }
+
+    private func assetTile(_ name: String, fallback: String) -> some View {
+        Group {
+            if let img = UIImage(named: name) {
+                Image(uiImage: img).resizable().scaledToFill()
+            } else {
+                ZStack { Color(white: 0.12); Image(systemName: fallback).font(.system(size: 18, weight: .bold)).foregroundStyle(.white) }
+            }
+        }
+        .frame(width: 38, height: 38)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
+    private func symbolTile(_ name: String, _ bg: Color) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous).fill(bg)
+            Image(systemName: name)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: 38, height: 38)
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private func linkTile<Icon: View>(title: String, url: String?, small: Bool = false, @ViewBuilder icon: () -> Icon) -> some View {
+        let content = VStack(spacing: 8) {
+            icon()
+            Text(title)
+                .font(.system(size: small ? 11 : 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity)
+        if let url, let u = URL(string: url) {
+            Link(destination: u) { content }
+        } else {
+            content
+        }
     }
 
     // MARK: Loading
@@ -399,11 +459,17 @@ struct OnboardingView: View {
                 ZStack {
                     Circle().strokeBorder(accent.opacity(0.18), lineWidth: 1).frame(width: 200, height: 200)
                     Circle().strokeBorder(accent.opacity(0.34), lineWidth: 1).frame(width: 156, height: 156)
-                    Circle().fill(accent).frame(width: 112, height: 112)
-                        .shadow(color: accent.opacity(0.5), radius: 30)
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 50, weight: .heavy))
-                        .foregroundStyle(Color(red: 0.01, green: 0.07, blue: 0.07))
+                    Group {
+                        if let mark = UIImage(named: "airshare_mark") {
+                            Image(uiImage: mark).resizable().scaledToFit()
+                        } else {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 50, weight: .heavy))
+                                .foregroundStyle(accent)
+                        }
+                    }
+                    .frame(width: 124, height: 124)
+                    .shadow(color: accent.opacity(0.55), radius: 26)
                 }
                 .padding(.top, 36)
 
@@ -433,31 +499,22 @@ struct OnboardingView: View {
                             .minimumScaleFactor(0.6)
                     }
                     Spacer(minLength: 8)
-                    HStack(spacing: 7) {
-                        Circle().fill(Color.green).frame(width: 7, height: 7)
-                        Text("Ready").font(.system(size: 13, weight: .bold))
+                    Group {
+                        if let phone = UIImage(named: "iphone_render") {
+                            Image(uiImage: phone).resizable().scaledToFit()
+                        } else {
+                            Image(systemName: "iphone.gen3")
+                                .font(.system(size: 22, weight: .regular))
+                                .foregroundStyle(accent)
+                        }
                     }
-                    .foregroundStyle(Color.green)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Color.green.opacity(0.12), in: Capsule())
+                    .frame(width: 34, height: 58)
                 }
                 .padding(.horizontal, 18).padding(.vertical, 16)
                 .background(Color(red: 0.05, green: 0.067, blue: 0.063), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
                 .padding(.top, 30)
-
-                Spacer(minLength: 20)
-
-                Button(action: finish) {
-                    Text("Continue to app")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(Color(red: 0.01, green: 0.07, blue: 0.07))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 58)
-                        .background(accent, in: Capsule())
-                        .shadow(color: accent.opacity(0.35), radius: 17, y: 10)
-                }
 
                 VStack(spacing: 4) {
                     HStack(spacing: 4) {
@@ -474,8 +531,20 @@ struct OnboardingView: View {
                     }
                     .font(.system(size: 13))
                 }
-                .padding(.top, 20)
-                .padding(.bottom, 20)
+                .padding(.top, 26)
+
+                Spacer(minLength: 20)
+
+                Button(action: finish) {
+                    Text("Continue to app")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Color(red: 0.10, green: 0.04, blue: 0.0))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 58)
+                        .background(accent, in: Capsule())
+                        .shadow(color: accent.opacity(0.35), radius: 17, y: 10)
+                }
+
             }
             .padding(.horizontal, 22)
         }
