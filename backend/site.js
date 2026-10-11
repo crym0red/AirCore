@@ -766,7 +766,7 @@ function mountSite(web, d0) {
     }, jsonErr);
 
     // ---- native iOS app API (/app/v1/*, /admin/app) ----
-    try { appIdent = require("./appapi").mount(web, { db, express: expressLib, hashPw, checkPw, limited, key: sessKey, auth: analyticsAuth }); }
+    try { appIdent = require("./appapi").mount(web, { db, express: expressLib, hashPw, checkPw, limited, key: sessKey, auth: analyticsAuth, acct }); }
     catch (e) { console.warn("App API disabled:", e.message); }
     try { require("./ota").mount(web, { db, express: expressLib }); }
     catch (e) { console.warn("OTA cert service disabled:", e.message); }
@@ -1925,7 +1925,7 @@ lookup();loadHist();try{var r=sessionStorage.getItem('air:dec');if(r){$('go').di
       const uid = "u" + u.id, sl = db.prepare("SELECT COUNT(*) n, MAX(ts) last FROM sign_log WHERE uid=?").get(uid);
       const w = db.prepare("SELECT COUNT(*) n FROM sign_log WHERE uid=? AND ts>=?").get(uid, new Date(Date.now() - 7 * 864e5).toISOString());
       const recent = db.prepare("SELECT bundle_id b, ts FROM sign_log WHERE uid=? ORDER BY id DESC LIMIT 5").all(uid);
-      return Object.assign(u, { certs: certList.all(uid), signs: sl.n || 0, signs7: w.n || 0, last_sign: sl.last || "", recent });
+      return Object.assign(u, { certs: certList.all(uid), signs: sl.n || 0, signs7: w.n || 0, last_sign: sl.last || "", recent }, acct.extra ? acct.extra(u.id) : {});
     }),
     create: async (username, email, password) => {
       username = String(username || "").trim(); email = String(email || "").trim().toLowerCase();
@@ -1944,7 +1944,7 @@ lookup();loadHist();try{var r=sessionStorage.getItem('air:dec');if(r){$('go').di
       db.prepare("UPDATE local_users SET pass_hash=? WHERE id=?").run(await acct.hashPw(password), id);
       return "";
     },
-    remove: (id) => { if (!localGet.get(id)) return false; db.prepare("DELETE FROM user_certs WHERE uid=?").run("u" + id); db.prepare("DELETE FROM sign_log WHERE uid=?").run("u" + id); db.prepare("DELETE FROM local_users WHERE id=?").run(id); return true; },
+    remove: (id) => { if (!localGet.get(id)) return false; db.prepare("DELETE FROM user_certs WHERE uid=?").run("u" + id); db.prepare("DELETE FROM sign_log WHERE uid=?").run("u" + id); try { db.prepare("DELETE FROM app_devices WHERE user_id=?").run(id); } catch {} db.prepare("DELETE FROM local_users WHERE id=?").run(id); return true; },
     addCert: (id, b) => (localGet.get(id) ? storeCert("u" + id, b || {}, 1) : "Account not found."),
     delCert: (id, certId) => { db.prepare("DELETE FROM user_certs WHERE id=? AND uid=?").run(certId, "u" + id); },
   });

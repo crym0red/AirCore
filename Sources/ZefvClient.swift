@@ -21,12 +21,14 @@ final class ZefvAccount: ObservableObject {
     @Published private(set) var signsToday: Int = UserDefaults.standard.integer(forKey: "zefv_signs_today")
     @Published private(set) var signsTotal: Int = UserDefaults.standard.integer(forKey: "zefv_signs_total")
     @Published private(set) var role: UserRole = .member
+    @Published private(set) var sponsor: String = ""
     @Published private(set) var busy = false
     @Published var lastError: String?
     @Published var panelShown = false
 
     private static let kSession  = "zefv_session_token"
     private static let kUsername = "zefv_username"
+    private static let kDeviceKey = "zefv_device_key"      // issued at sign-in; with the ADID it signs this device in automatically
     private static let kLastAuthenticatedAt = "zefv_last_authenticated_at"
 
     var lastAuthenticatedAt: Date? {
@@ -135,6 +137,7 @@ final class ZefvAccount: ObservableObject {
             _ = Keychain.set(Self.kSession, tok)
             _ = Keychain.set(Self.kUsername, name)
             _ = Keychain.set("zefv_role", r.rawValue)
+            if let dk = o["device_key"] as? String, !dk.isEmpty { _ = Keychain.set(Self.kDeviceKey, dk) }
             username = name; role = r
             // The account owns an ADID: adopt it so staff roles follow you to a new device / reinstall.
             if let a = (o["adid"] as? String)?.uppercased(), MDIDManager.shared.isValid(a), a != MDID.current { _ = MDID.replace(a) }
@@ -158,12 +161,35 @@ final class ZefvAccount: ObservableObject {
             style = st; st.save()
             let r = UserRole(rawValue: (o["role"] as? String) ?? "member") ?? .member
             role = r; _ = Keychain.set("zefv_role", r.rawValue)
+            sponsor = (o["sponsor"] as? String) ?? ""
+            if (Keychain.get(Self.kDeviceKey) ?? "").isEmpty, MDIDManager.shared.isValid(MDID.current),
+               let d = try? await post("account", ["action": "device_key", "token": tok, "adid": MDID.current]),
+               let dk = d["device_key"] as? String, !dk.isEmpty {
+                _ = Keychain.set(Self.kDeviceKey, dk)       // existing sessions pair themselves once
+            }
             await StaffGate.shared.refresh()
             await syncCertificates()
         } catch let e as Err {
-            if case .server(let m) = e, m.lowercased().contains("session") { await clearLocal() }
+            if case .server(let m) = e, m.lowercased().contains("session") {
+                await clearLocal()
+                _ = await autoLoginIfNeeded()          // expired session → recognized device signs straight back in
+            }
             lastError = e.message
         } catch { lastError = error.localizedDescription }
+    }
+
+    /// Automatic sign-in: once this device has signed in, its ADID + hidden device key (Keychain) get a fresh session
+    /// with no password. Does nothing when already signed in or when the device was never paired.
+    @discardableResult
+    func autoLoginIfNeeded() async -> Bool {
+        if let t = sessionToken, !t.isEmpty, username != nil { return true }
+        guard let key = Keychain.get(Self.kDeviceKey), !key.isEmpty, MDIDManager.shared.isValid(MDID.current) else { return false }
+        let ok = await run { try await self.post("autologin", ["adid": MDID.current, "device_key": key]) }
+        if !ok {
+            if (lastError ?? "").lowercased().contains("recognized") { _ = Keychain.set(Self.kDeviceKey, "") }   // revoked on the server
+            lastError = nil                // quiet: the normal sign-in screen simply shows
+        }
+        return ok
     }
 
     /// Registered-only cosmetics: username color / rainbow / animated background.
@@ -233,6 +259,52 @@ final class ZefvAccount: ObservableObject {
         }
     }
 
+    // MARK: - Admin: groups & sponsors (server enforces admin-only)
+
+    struct AdminMember: Identifiable, Equatable, Sendable {
+        let username: String
+        let adid: String
+        let role: String
+        var groups: [String]
+        var sponsor: String
+        var id: String { username }
+    }
+
+    private var isAdminNow: Bool { role == .admin || StaffGate.shared.role == .admin }
+
+    func adminListUsers(_ q: String) async -> (groups: [String], users: [AdminMember])? {
+        guard isAdminNow, let tok = sessionToken else { return nil }
+        do {
+            let o = try await accountAPIPost(["action": "admin_list_users", "token": tok, "q": q])
+            let cat = (o["groups"] as? [String]) ?? []
+            let list = (o["users"] as? [[String: Any]]) ?? []
+            let users = list.map { u in
+                AdminMember(username: (u["username"] as? String) ?? "", adid: (u["adid"] as? String) ?? "",
+                            role: (u["role"] as? String) ?? "member", groups: (u["groups"] as? [String]) ?? [],
+                            sponsor: (u["sponsor"] as? String) ?? "")
+            }
+            return (cat, users)
+        } catch { lastError = (error as? Err)?.message ?? error.localizedDescription; return nil }
+    }
+
+    func adminSetGroups(_ username: String, _ groups: [String]) async -> [String]? {
+        guard isAdminNow, let tok = sessionToken else { return nil }
+        do {
+            let o = try await accountAPIPost(["action": "admin_set_groups", "token": tok, "username": username, "groups": groups])
+            if username.lowercased() == (self.username ?? "").lowercased() { await refreshProfile() }
+            return (o["groups"] as? [String]) ?? groups
+        } catch { lastError = (error as? Err)?.message ?? error.localizedDescription; return nil }
+    }
+
+    func adminSetSponsor(_ username: String, _ value: String) async -> String? {
+        guard isAdminNow, let tok = sessionToken else { return nil }
+        do {
+            let o = try await accountAPIPost(["action": "admin_set_sponsor", "token": tok, "username": username, "sponsor": value])
+            if username.lowercased() == (self.username ?? "").lowercased() { await refreshProfile() }
+            return (o["sponsor"] as? String) ?? value
+        } catch { lastError = (error as? Err)?.message ?? error.localizedDescription; return nil }
+    }
+
     func setUsername(_ n: String) async -> Bool {
         guard let tok = sessionToken else { return false }
         busy = true; lastError = nil; defer { busy = false }
@@ -266,11 +338,12 @@ final class ZefvAccount: ObservableObject {
         _ = Keychain.set(Self.kSession, "")
         _ = Keychain.set(Self.kUsername, "")
         _ = Keychain.set("zefv_role", "")
-        username = nil; email = nil; role = .member; style = .none; UserStyle.none.save()
+        username = nil; email = nil; role = .member; sponsor = ""; style = .none; UserStyle.none.save()
     }
 
     func logout() async {
-        if let tok = sessionToken { _ = try? await post("account", ["action": "logout", "token": tok]) }
+        if let tok = sessionToken { _ = try? await post("account", ["action": "logout", "token": tok, "adid": MDID.current]) }
+        _ = Keychain.set(Self.kDeviceKey, "")
         removeSyncedCertificates()
         await clearLocal()
     }

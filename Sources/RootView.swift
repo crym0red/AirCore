@@ -42,8 +42,24 @@ struct RootView: View {
         .id(theme.revision)                                   // re-skin every tab on a theme change
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(ThemeBackgroundLayer())                      // particle/grid network floats over the tab content
+        .overlay(alignment: .topTrailing) {                   // user dropdown (account chip → panel)
+            if account.panelShown {
+                ZStack(alignment: .topTrailing) {
+                    Color.black.opacity(0.35).ignoresSafeArea()
+                        .onTapGesture { account.panelShown = false }
+                    AccountDropdown()
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Theme.stroke, lineWidth: 1))
+                        .shadow(color: .black.opacity(0.5), radius: 20, y: 8)
+                        .padding(.top, 100).padding(.trailing, 14)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: account.panelShown)
 
         .task {
+            await account.autoLoginIfNeeded()          // recognized ADID + device key → signed in, no password
             await SourceStore.shared.warmUpAtLaunch()
             WidgetDataManager.shared.refresh()
             _ = await PortalStorage.cleanupStaleTemporaryFiles()

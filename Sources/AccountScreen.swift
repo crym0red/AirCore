@@ -17,6 +17,7 @@ struct AccountScreen: View {
     @State private var curPass = ""
     @State private var newPass = ""
     @State private var adminMDID = MDID.current
+    @State private var showMembers = false
     @State private var toast: String?
     @State private var accountUDID = CertificateStore.knownUDID() ?? ""
     @State private var confirAirShareOut = false
@@ -43,6 +44,7 @@ struct AccountScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: .airshareKnownUDIDDidChange)) { _ in
             refreshAccountUDID()
         }
+        .sheet(isPresented: $showMembers) { AdminMembersSheet().preferredColorScheme(AppTheme.shared.colorScheme) }
         .onChange(of: account.email) { email = $0 ?? "" }
         .onChange(of: account.style) { draft = $0 }
     }
@@ -103,6 +105,27 @@ struct AccountScreen: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
+
+                    // Sponsor (set by an admin).
+                    if !account.sponsor.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("SPONSOR")
+                                .font(.system(size: 11, weight: .heavy, design: .monospaced))
+                                .kerning(1.5)
+                                .foregroundStyle(Theme.subtle)
+                            HStack(spacing: 6) {
+                                Image(systemName: "star.circle.fill").font(.system(size: 13, weight: .bold))
+                                Text(account.sponsor).font(.system(size: 13, weight: .bold))
+                            }
+                            .padding(.horizontal, 11).padding(.vertical, 6)
+                            .foregroundStyle(Color(red: 0.4, green: 0.9, blue: 0.5))
+                            .background(Color(red: 0.4, green: 0.9, blue: 0.5).opacity(0.16))
+                            .overlay(Capsule().stroke(Color(red: 0.4, green: 0.9, blue: 0.5).opacity(0.5), lineWidth: 1))
+                            .clipShape(Capsule())
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                    }
 
                     // Private device identifier.
                     Button {
@@ -296,6 +319,26 @@ struct AccountScreen: View {
                             .font(.system(size: 11, weight: .bold))
                             .foregroundStyle(Theme.accent)
                         }
+                    }
+                }
+
+                // Admin: groups & sponsors
+                if role == .admin {
+                    Card {
+                        section("Groups & sponsors")
+                        Text("Put members in groups (Admin, Co-Admin, Staff, Sponsor…) and set their sponsor. Only admins can change these.")
+                            .font(.system(size: 11)).foregroundStyle(Theme.subtle)
+                        Button { showMembers = true } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "person.3.fill")
+                                Text("Manage members").font(.system(size: 14, weight: .bold))
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.system(size: 12, weight: .bold))
+                            }
+                            .foregroundStyle(Theme.accent)
+                            .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
 

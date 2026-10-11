@@ -23,6 +23,10 @@ struct UserStyle: Hashable, Sendable {
         "top_signer": ("TOP SIGNER", "signature",             Color(red: 1.0, green: 0.55, blue: 0.1)),
         "og":         ("OG",         "flame.fill",            Color(red: 1.0, green: 0.27, blue: 0.23)),
         "supporter":  ("SUPPORTER",  "heart.fill",            Color(red: 1.0, green: 0.4, blue: 0.7)),
+        "admin":      ("ADMIN",      "shield.lefthalf.filled", Color(red: 1.0, green: 0.27, blue: 0.23)),
+        "co_admin":   ("CO-ADMIN",   "shield.fill",           Color(red: 1.0, green: 0.55, blue: 0.1)),
+        "staff":      ("STAFF",      "person.badge.shield.checkmark.fill", Color(red: 0.45, green: 0.5, blue: 1.0)),
+        "sponsor":    ("SPONSOR",    "star.circle.fill",      Color(red: 0.4, green: 0.9, blue: 0.5)),
     ]
 
     /// Fonts that ship on iOS (no bundling needed). Label → font name ("" = system).
