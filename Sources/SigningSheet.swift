@@ -1567,39 +1567,38 @@ struct DeveloperToolSheet: View {
                 }
             }.listRowBackground(Color(white: 0.08))
             Section {
-                HStack(spacing: 10) {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
                     Button { Task { await openLocalCFG() } } label: {
-                        Label("Open CFG Viewer", systemImage: "point.3.connected.trianglepath.dotted")
-                            .foregroundStyle(blue)
+                        Label("CFG Viewer", systemImage: "point.3.connected.trianglepath.dotted")
+                            .lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
 
                     Button {
                         Task { await openDisassemblerBrowser() }
                     } label: {
                         Label("Disassembler", systemImage: "list.bullet.rectangle")
-                            .foregroundStyle(blue)
+                            .lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
 
                     Button {
                         guard cfgFunction != nil else { cfgStatus = "Open CFG Viewer once to build the annotated function."; return }
                         showAnalysisCenter = true
                     } label: {
-                        Label("Analysis Center", systemImage: "square.grid.3x3")
-                            .foregroundStyle(blue)
+                        Label("Analysis", systemImage: "square.grid.3x3")
+                            .lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
 
                     Button {
                         openPseudocode()
                     } label: {
-                        Label("Open Pseudocode", systemImage: "chevron.left.forwardslash.chevron.right")
-                            .foregroundStyle(blue)
+                        Label("Pseudocode", systemImage: "chevron.left.forwardslash.chevron.right")
+                            .lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
                     .disabled(cfgFunction == nil)
                 }
+                .buttonStyle(.bordered)
+                .tint(blue)
+                .font(.footnote.weight(.semibold))
                 if let cfgStatus {
                     Text(cfgStatus).font(.caption).foregroundStyle(Theme.subtle)
                 }

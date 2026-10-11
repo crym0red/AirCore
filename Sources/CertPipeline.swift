@@ -22,9 +22,9 @@ nonisolated enum CertPipeline {
     static let certsYML = #"""
 name: AirShare certs (certbot)
 
-# Hand-rolled TLS for the on-device AirShare server (*.zefv.dev → 127.0.0.1).
+# Hand-rolled TLS for the on-device AirShare server (*.airshare.lol → 127.0.0.1).
 #
-# Manual DNS-01: certbot hands us two TXT values for _acme-challenge.zefv.dev
+# Manual DNS-01: certbot hands us two TXT values for _acme-challenge.airshare.lol
 # (wildcard + apex). Each is published to challenge.json on the `certs`
 # branch (visible in the app's AirShare screen and on GitHub); the auth hook then
 # polls DNS-over-HTTPS and only returns once the record is live, so Let's
@@ -37,7 +37,7 @@ name: AirShare certs (certbot)
 # eab_kid / eab_hmac as dispatch inputs.
 #
 # No secrets required for Let's Encrypt: the app passes `email` as a dispatch input.
-# For the weekly cron set var LE_EMAIL (or secret LE_EMAIL). Optional vars: CERT_DOMAIN (zefv.dev), RENEW_DAYS (30),
+# For the weekly cron set var LE_EMAIL (or secret LE_EMAIL). Optional vars: CERT_DOMAIN (airshare.lol), RENEW_DAYS (30),
 # WAIT_MINUTES (45), POLL_SECONDS (20).
 # Automated alternative: set var DNS_MODE=cloudflare + secret CF_API_TOKEN.
 
@@ -47,7 +47,7 @@ on:
   workflow_dispatch:
     inputs:
       domain:
-        description: "Domain to issue for (wildcard + apex). Blank = vars.CERT_DOMAIN / zefv.dev"
+        description: "Domain to issue for (wildcard + apex). Blank = vars.CERT_DOMAIN / airshare.lol"
         type: string
         default: ""
       email:
@@ -84,7 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      CERT_DOMAIN:  ${{ inputs.domain || vars.CERT_DOMAIN || 'zefv.dev' }}
+      CERT_DOMAIN:  ${{ inputs.domain || vars.CERT_DOMAIN || 'airshare.lol' }}
       RENEW_DAYS:   ${{ vars.RENEW_DAYS  || '30' }}
       DNS_MODE:     ${{ vars.DNS_MODE    || 'manual' }}
       WAIT_MINUTES: ${{ vars.WAIT_MINUTES || '45' }}

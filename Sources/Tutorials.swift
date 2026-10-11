@@ -39,7 +39,7 @@ enum TutorialLibrary {
         steps: [
             TutorialStep(
                 title: "What you need",
-                body: "An iPhone with this app, a GitHub account, and a domain you control (optional — zefv.dev is preconfigured). That's the whole list. No Mac, no Xcode, no server, no terminal — every build, sign, install and cert renewal runs on GitHub Actions or on the phone itself."),
+                body: "An iPhone with this app, a GitHub account, and a domain you control (optional — airshare.lol is preconfigured). That's the whole list. No Mac, no Xcode, no server, no terminal — every build, sign, install and cert renewal runs on GitHub Actions or on the phone itself."),
             TutorialStep(
                 title: "Sign in to GitHub and make a token",
                 body: "On github.com (Safari is fine): Settings › Developer settings › Fine-grained tokens › Generate. Repository access: the repo(s) you'll use. Permissions — Contents, Actions, Workflows: Read and write. Copy it.",
@@ -57,7 +57,7 @@ enum TutorialLibrary {
                 tip: "Linking is idempotent — tap it again any time; it only adds what's missing."),
             TutorialStep(
                 title: "Point your domain (optional)",
-                body: "Skip this to use zefv.dev. For your own domain: at your DNS host add an A record `*` → 127.0.0.1 (and `@` → 127.0.0.1). Then Settings › AirShare Domain: type the domain, tap Check — it should say → 127.0.0.1 ✓. Save."),
+                body: "Skip this to use airshare.lol. For your own domain: at your DNS host add an A record `*` → 127.0.0.1 (and `@` → 127.0.0.1). Then Settings › AirShare Domain: type the domain, tap Check — it should say → 127.0.0.1 ✓. Save."),
             TutorialStep(
                 title: "Issue the cert",
                 body: "Tap Renew now. Within a minute the DNS challenge card shows a TXT name and value — add it at your DNS host, the workflow notices and continues; a second value follows for the apex, add it too (keep both). When it finishes, Pull latest. Done — installs now go over https://mr.<your domain>."),

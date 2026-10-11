@@ -5,7 +5,7 @@
 //  for the ~90s installd needs.
 //
 //  Cert source follows ServerConfig.certMode:
-//    "public" → the ACME (zefv.dev-style) cert, refreshed from the certs repo.
+//    "public" → the ACME (airshare.lol-style) cert, refreshed from the certs repo.
 //    "local"  → our own root CA's leaf (LocalCAManager) — no network needed,
 //               covers whatever host it was last issued for.
 //  The "does this cert actually cover this host" check reads whichever cert

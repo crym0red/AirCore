@@ -20,7 +20,15 @@ nonisolated final class MDIDManager {
     /// Returns the persisted per-install ADID, minting a new random one on the
     /// first request. Existing valid IDs are preserved for backwards compatibility.
     func mdid() -> String {
-        if let current = read(acct), isValid(current) { return current }
+        if let current = read(acct), isValid(current) {
+            // Migrate legacy MS- identities to the AS- prefix, keeping the suffix.
+            if current.hasPrefix("MS-") {
+                let migrated = "AS-" + current.dropFirst(3)
+                save(migrated, acct)
+                return migrated
+            }
+            return current
+        }
         let generated = generateRandom()
         save(generated, acct)
         return generated

@@ -1,3 +1,5 @@
+#import <stdlib.h>
+#import <stdio.h>
 #import "UCDisassembler.h"
 #import <objc/runtime.h>
 #import <mach/mach.h>
@@ -113,6 +115,17 @@ static BOOL uc_safe_read_memory(uint64_t address, void *buffer, size_t size) {
 - (void)initCapstone {
     if (g_capstoneInitialized) return;
     
+    // Capstone is built without CAPSTONE_USE_SYS_DYN_MEM, so its allocators are NULL
+    // and cs_open() fails with CS_ERR_MEMSETUP unless we register them first.
+    cs_opt_mem memSetup = {
+        .malloc = malloc,
+        .calloc = calloc,
+        .realloc = realloc,
+        .free = free,
+        .vsnprintf = vsnprintf
+    };
+    cs_option(0, CS_OPT_MEM, (size_t)&memSetup);
+
     cs_err err = cs_open(CS_ARCH_AARCH64, CS_MODE_ARM | CS_MODE_LITTLE_ENDIAN, &g_capstoneHandle);
     if (err != CS_ERR_OK) {
         NSLog(@"[UCDisassembler] cs_open failed: %s", cs_strerror(err));

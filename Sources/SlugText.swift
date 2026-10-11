@@ -248,19 +248,6 @@ struct OnboardingView: View {
                 .font(.system(size: 42, weight: .bold))
                 .foregroundStyle(.white)
                 .opacity(logoOpacity)
-
-            HStack(spacing: 6) {
-                Circle().fill(accent).frame(width: 6, height: 6)
-                Text("LOCAL SIGNING READY")
-                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
-                    .foregroundStyle(accent)
-                    .tracking(0.8)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(accent.opacity(0.12)))
-            .overlay(Capsule().stroke(accent.opacity(0.3), lineWidth: 1))
-            .opacity(logoOpacity)
         }
     }
 

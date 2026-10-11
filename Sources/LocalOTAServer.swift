@@ -4,12 +4,12 @@
 //  the device (NIOSSL) serving an itms-services manifest + the signed IPA.
 //
 //  Any domain works: point `*.<domain>` at 127.0.0.1 and let certs.yml issue
-//  a Let's Encrypt wildcard for it. zefv.dev is just the default whose cert
+//  a Let's Encrypt wildcard for it. airshare.lol is just the default whose cert
 //  ships in the bundle. The cert is one WE issue: .github/workflows/certs.yml runs certbot (DNS-01) and
 //  publishes server.crt / server.pem / pack.json on the `certs` branch. A copy
 //  ships in the bundle (Build.yml bakes the latest one in) and the app refreshes
 //  from the branch before expiry. iOS trusts the chain, connects to
-//  loopback as mr.zefv.dev, installs — no network needed for the install itself.
+//  loopback as ota.airshare.lol, installs — no network needed for the install itself.
 //
 
 import Foundation
@@ -21,20 +21,23 @@ import NIOSSL
 nonisolated enum ServerConfig {
     /// Bring-your-own domain. Requirements: `*.<domain>` (and ideally `<domain>`) have an
     /// A record → 127.0.0.1, and certs.yml has issued a wildcard cert for it.
-    /// Default is zefv.dev, whose cert ships in the bundle.
-    static let defaultDomain = "zefv.dev"
+    /// Default is airshare.lol, whose cert ships in the bundle.
+    static let defaultDomain = "airshare.lol"
     static var certDomain: String {
-        UserDefaults.standard.string(forKey: "uzd_cert_domain") ?? defaultDomain
+        let v = UserDefaults.standard.string(forKey: "uzd_cert_domain") ?? ""
+        return (v.isEmpty || v.contains("zefv.dev")) ? defaultDomain : v   // legacy zefv.dev → airshare.lol
     }
     static func setCertDomain(_ d: String) { UserDefaults.standard.set(d, forKey: "uzd_cert_domain") }
 
     /// SNI + manifest host. Must be under `certDomain` and covered by the cert's SANs.
-    /// Default `ota.zefv.dev`: on Cloudflare, `*.zefv.dev` points at the VPS (user
+    /// Default `ota.airshare.lol`: on Cloudflare, `*.airshare.lol` points at the VPS (user
     /// subdomains), so the AirShare host is a dedicated label with its own A record → 127.0.0.1.
-    /// `ota.zefv.dev` is one label under the wildcard, so the *.zefv.dev cert covers it.
-    static let defaultInstallHost = "mr.zefv.dev"
+    /// `ota.airshare.lol` is one label under the wildcard, so the *.airshare.lol cert covers it.
+    static let defaultInstallHost = "ota.airshare.lol"
     static var installHost: String {
-        UserDefaults.standard.string(forKey: "uzd_install_host") ?? (certDomain == defaultDomain ? defaultInstallHost : "mr.\(certDomain)")
+        let v = UserDefaults.standard.string(forKey: "uzd_install_host") ?? ""
+        if !v.isEmpty && !v.contains("zefv.dev") { return v }
+        return certDomain == defaultDomain ? defaultInstallHost : "ota.\(certDomain)"
     }
     static func setInstallHost(_ h: String) { UserDefaults.standard.set(h, forKey: "uzd_install_host") }
 
@@ -43,8 +46,8 @@ nonisolated enum ServerConfig {
     static let certResource = "server"
 
     /// AirShare TLS source:
-    ///   "public" — the zefv.dev wildcard cert, issued and auto-renewed on the VPS
-    ///              (certbot + Cloudflare DNS-01) and pulled from api.zefv.dev.
+    ///   "public" — the airshare.lol wildcard cert, issued and auto-renewed on the VPS
+    ///              (certbot + Cloudflare DNS-01) and pulled from airshare.lol.
     ///   "custom" — the user's own cert + key for their own domain (imported PEM).
     ///   "local"  — our own root CA (no DNS, needs the root profile installed).
     static var certMode: String { UserDefaults.standard.string(forKey: "uzd_cert_mode") ?? "public" }
@@ -53,21 +56,21 @@ nonisolated enum ServerConfig {
 
     /// Where the "public" cert comes from. The VPS serves the live wildcard pair
     /// (fullchain + key, JSON) behind a shared token; certbot renews it there.
-    static let defaultCertSourceURL = "https://api.zefv.dev/ota/cert.php"
+    static let defaultCertSourceURL = "https://airshare.lol/ota/cert.php"
     static var certSourceURL: String {
         let v = UserDefaults.standard.string(forKey: "uzd_cert_source_url") ?? ""
-        return v.isEmpty ? defaultCertSourceURL : v
+        return (v.isEmpty || v.contains("zefv.dev")) ? defaultCertSourceURL : v
     }
     static func setCertSourceURL(_ u: String) { UserDefaults.standard.set(u, forKey: "uzd_cert_source_url") }
-    static let defaultCertSourceToken = "zefv-ota-2026"
+    static let defaultCertSourceToken = "airshare-ota-2026"
     static var certSourceToken: String {
         let v = UserDefaults.standard.string(forKey: "uzd_cert_source_token") ?? ""
-        return v.isEmpty ? defaultCertSourceToken : v
+        return (v.isEmpty || v == "zefv-ota-2026") ? defaultCertSourceToken : v
     }
     static func setCertSourceToken(_ t: String) { UserDefaults.standard.set(t, forKey: "uzd_cert_source_token") }
 
     /// Hand-rolled cert pipeline: .github/workflows/certs.yml runs certbot
-    /// (DNS-01) for *.zefv.dev and commits server.crt / server.pem / pack.json
+    /// (DNS-01) for *.airshare.lol and commits server.crt / server.pem / pack.json
     /// to the `certs` branch. The app reads them through the GitHub Contents
     /// API with its own token, so private repos work too.
     static var certRepoOwner: String { UserDefaults.standard.string(forKey: "uzd_cert_owner") ?? "mrzefv" }
@@ -215,11 +218,7 @@ nonisolated enum ZefvCert {
     /// Fallback: AirShare's pack.json. The `token` argument is kept for call-site
     /// compatibility; the VPS uses its own shared token (ServerConfig.certSourceToken).
     static func fetch(token: String? = nil) async throws -> Meta {
-        do { return try await fetchFromVPS() }
-        catch let primary {
-            do { return try await fetchFromURL(ServerConfig.refreshURL) }
-            catch { throw primary }
-        }
+        try await fetchFromVPS()
     }
 
     /// VPS JSON: { "cert": "<fullchain PEM>", "key": "<privkey PEM>", "not_after": "ISO8601", "sans": [...] }
@@ -847,7 +846,7 @@ nonisolated final class LocalOTAServer: Identifiable, @unchecked Sendable {
 }
 
 
-// MARK: - VPS status + install analytics (api.zefv.dev/ota/status.php · event.php)
+// MARK: - VPS status + install analytics (airshare.lol/ota/status.php · event.php)
 
 nonisolated enum ZefvVPS {
     /// Derived from the cert source URL so a custom source moves everything together.

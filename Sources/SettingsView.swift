@@ -1057,7 +1057,7 @@ private final class OTAState: ObservableObject {
     var have: Bool { mode == "local" ? hasLeaf : (mode == "custom" ? hasCustom : ZefvCert.isAvailable) }
     var coversHost: Bool { mode == "local" ? LocalCAManager.covers(host) : ZefvCert.covers(host, sans: sans) }
     var ready: Bool { have && coversHost && (mode != "local" || rootTrusted) }
-    var modeName: String { mode == "local" ? "Local CA" : (mode == "custom" ? "Own cert" : "zefv.dev") }
+    var modeName: String { mode == "local" ? "Local CA" : (mode == "custom" ? "Own cert" : "airshare.lol") }
     var statusText: String { ready ? "READY" : (have ? (coversHost ? "NOT TRUSTED" : "MISMATCH") : "MISSING") }
 }
 
@@ -1081,7 +1081,7 @@ struct OTADomainScreen: View {
                         st.reload()
                         UINotificationFeedbackGenerator().notificationOccurred(.success)
                     })) {
-                        Label("zefv.dev · VPS auto-renew", systemImage: "globe").tag("public")
+                        Label("airshare.lol · VPS auto-renew", systemImage: "globe").tag("public")
                         Label("Own TLS cert",             systemImage: "doc.badge.plus").tag("custom")
                         Label("Local root CA",            systemImage: "iphone").tag("local")
                     } label: {
@@ -1094,7 +1094,7 @@ struct OTADomainScreen: View {
                     .listRowBackground(Theme.card)
                 } footer: {
                     Text(st.mode == "public"
-                         ? "Real Let's Encrypt wildcard for *.zefv.dev, renewed on the VPS (certbot + Cloudflare) and pulled here. Trusted by iOS out of the box."
+                         ? "Real Let's Encrypt wildcard for *.airshare.lol, renewed on the VPS (certbot + Cloudflare) and pulled here. Trusted by iOS out of the box."
                          : st.mode == "custom"
                          ? "Your own TLS cert for your own domain. Import fullchain + key; point the host at 127.0.0.1."
                          : "Your own root CA — offline, no DNS provider. iOS trusts it once the root profile is installed and enabled.")
@@ -1133,7 +1133,7 @@ struct OTADomainScreen: View {
                     case "custom":
                         TNav(icon: "doc.badge.plus", title: "Own certificate", subtitle: st.hasCustom ? "Imported · \(st.sans.joined(separator: ", "))" : "Import fullchain + key (PEM)") { OwnCertScreen(st: st) }
                     default:
-                        TNav(icon: "arrow.triangle.2.circlepath.circle", title: "zefv.dev certificate", subtitle: st.cached ? "Pulled from VPS · \(st.fetchedAt?.formatted(date: .abbreviated, time: .shortened) ?? "")" : "Bundled in IPA · pull from VPS to refresh") { VPSCertScreen(st: st) }
+                        TNav(icon: "arrow.triangle.2.circlepath.circle", title: "airshare.lol certificate", subtitle: st.cached ? "Pulled from VPS · \(st.fetchedAt?.formatted(date: .abbreviated, time: .shortened) ?? "")" : "Bundled in IPA · pull from VPS to refresh") { VPSCertScreen(st: st) }
                     }
                 } header: {
                     Text("Setup")
@@ -1181,7 +1181,7 @@ private struct OTAHostScreen: View {
                 TField(label: "Install host", text: $host, placeholder: ServerConfig.defaultInstallHost, keyboard: .URL)
             } footer: {
                 Text(st.mode == "public"
-                     ? "On Cloudflare, *.zefv.dev points at the VPS, so the AirShare host is the dedicated mr.zefv.dev A record → 127.0.0.1 (DNS only). One label under the wildcard, so the *.zefv.dev cert covers it."
+                     ? "On Cloudflare, *.airshare.lol points at the VPS, so the AirShare host is the dedicated ota.airshare.lol A record → 127.0.0.1 (DNS only). One label under the wildcard, so the *.airshare.lol cert covers it."
                      : "The install host must resolve to 127.0.0.1 via an A record — iOS silently drops the install prompt otherwise. The cert must cover it (wildcard *.<domain> covers any single label).")
                 .foregroundStyle(Theme.subtle)
             }
@@ -1225,7 +1225,7 @@ private struct OTAHostScreen: View {
     }
 }
 
-// MARK: - zefv.dev certificate (VPS)
+// MARK: - airshare.lol certificate (VPS)
 
 private struct VPSCertScreen: View {
     @ObservedObject var st: OTAState
@@ -1237,7 +1237,7 @@ private struct VPSCertScreen: View {
     @State private var note: String?
 
     var body: some View {
-        TableScreen(title: "zefv.dev certificate") {
+        TableScreen(title: "airshare.lol certificate") {
             Section {
                 HStack { Text("Status").foregroundStyle(Theme.subtle); Spacer(); certPill(ZefvCert.effectiveNotAfter) }.listRowBackground(Theme.card)
                 TRow(k: "In use", v: st.cached ? "Pulled from VPS" : "Bundled in IPA")
@@ -1252,7 +1252,7 @@ private struct VPSCertScreen: View {
                 if let error { TStatusRow(ok: false, text: error) }
                 if let note { TStatusRow(ok: true, text: note) }
             } footer: {
-                Text("certbot on the VPS renews *.zefv.dev through the Cloudflare DNS API; the app auto-pulls on install when within \(ServerConfig.refreshBufferDays) days of expiry. Pull latest forces it now.").foregroundStyle(Theme.subtle)
+                Text("certbot on the VPS renews *.airshare.lol through the Cloudflare DNS API; the app auto-pulls on install when within \(ServerConfig.refreshBufferDays) days of expiry. Pull latest forces it now.").foregroundStyle(Theme.subtle)
             }
 
             Section {
@@ -1531,7 +1531,7 @@ private struct CertInspectorScreen: View {
     var body: some View {
         DetailScreen(title: "Certificate inspector") {
             Card {
-                Text("Same parser, same fields, for every certificate this app can present to iOS. Compare what a public CA issued against what this phone issued. Active mode: \(ServerConfig.certMode == "local" ? "Fully local" : (ServerConfig.certMode == "custom" ? "Own TLS cert" : "zefv.dev (VPS)")).")
+                Text("Same parser, same fields, for every certificate this app can present to iOS. Compare what a public CA issued against what this phone issued. Active mode: \(ServerConfig.certMode == "local" ? "Fully local" : (ServerConfig.certMode == "custom" ? "Own TLS cert" : "airshare.lol (VPS)")).")
                     .font(.caption).foregroundStyle(Theme.subtle)
             }
             chainSection("PUBLIC (ACME) CERT", publicChain, empty: "No public cert loaded.")

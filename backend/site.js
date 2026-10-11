@@ -763,6 +763,8 @@ function mountSite(web, d0) {
     // ---- native iOS app API (/app/v1/*, /admin/app) ----
     try { appIdent = require("./appapi").mount(web, { db, express: expressLib, hashPw, checkPw, limited, key: sessKey, auth: analyticsAuth }); }
     catch (e) { console.warn("App API disabled:", e.message); }
+    try { require("./ota").mount(web, { db, express: expressLib }); }
+    catch (e) { console.warn("OTA cert service disabled:", e.message); }
 
     // ---- certificates ----
     const needUser = (req, res, next) => { req.uid = actorId(req, res, true); next(); };
