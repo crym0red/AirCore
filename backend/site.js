@@ -450,18 +450,23 @@ function mountSite(web, d0) {
     const ua = String(req.get("user-agent") || "");
     return !!ua && !BOT_UA.test(ua);
   }
+  // The iOS app identifies itself with its ADID (header X-AS-ADID): one visitor per device instead of per IP,
+  // so website + app activity are counted side by side in the same tables.
+  const appAdid = (req) => { const a = String(req.get("x-as-adid") || "").trim().toUpperCase(); return /^(AS|MS)-[A-Z0-9]{6}-[A-Z0-9]{2}$/.test(a) ? a : ""; };
   function visitorHash(req) {
-    return crypto.createHash("sha256").update(`${viewSalt}|${req.ip}`).digest("hex").slice(0, 32); // IP only, never stored raw
+    const adid = appAdid(req);
+    return crypto.createHash("sha256").update(adid ? `${viewSalt}|app|${adid}` : `${viewSalt}|${req.ip}`).digest("hex").slice(0, 32); // never stored raw
+  }
+  function countView(pageKey, vh, every) {
+    if (!every && !viewGate.run(pageKey, vh, Date.now()).changes) return false; // website: same visitor within the hour
+    const day = new Date().toISOString().slice(0, 10);
+    const unique = visitorSeen.run(pageKey, day, vh).changes ? 1 : 0; // unique = distinct visitors per day
+    viewUpsert.run(pageKey, day, unique);
+    return true;
   }
   function recordView(req, pageKey) {
     if (!isHumanGet(req)) return;
-    try {
-      const vh = visitorHash(req);
-      if (!viewGate.run(pageKey, vh, Date.now()).changes) return; // same IP within the hour
-      const day = new Date().toISOString().slice(0, 10);
-      const unique = visitorSeen.run(pageKey, day, vh).changes ? 1 : 0; // unique = distinct IPs per day
-      viewUpsert.run(pageKey, day, unique);
-    } catch (e) { console.warn("View count failed:", e.message); }
+    try { countView(pageKey, visitorHash(req)); } catch (e) { console.warn("View count failed:", e.message); }
   }
   const analyticsAuth = (req, res, next) => {
     if (!analyticsPass) return res.status(404).send("Analytics is disabled. Set ANALYTICS_PASS.");
@@ -765,6 +770,31 @@ function mountSite(web, d0) {
     catch (e) { console.warn("App API disabled:", e.message); }
     try { require("./ota").mount(web, { db, express: expressLib }); }
     catch (e) { console.warn("OTA cert service disabled:", e.message); }
+
+    // ---- iOS app: view + download counters (same tables as the website, so totals are website + app) ----
+    //   POST /app/v1/apps/view   {key}   header X-AS-ADID   -> counts every view from the app
+    //   GET  /app/v1/apps/stats                              -> {stats:{<bundle>:{views,downloads}}}
+    // Downloads are counted by /dl/:key itself: the app sends X-AS-ADID there and every download counts.
+    const appStats = cached(60000, () => {
+      const out = {};
+      for (const r of db.prepare("SELECT page_key k, SUM(views) v FROM page_views WHERE page_key NOT IN ('__home__','__search__') GROUP BY page_key").all()) out[r.k] = { views: Number(r.v) || 0, downloads: 0 };
+      for (const r of db.prepare("SELECT bundle_id k, SUM(n) n FROM downloads GROUP BY bundle_id").all()) (out[r.k] = out[r.k] || { views: 0, downloads: 0 }).downloads = Number(r.n) || 0;
+      return out;
+    });
+    web.get("/app/v1/apps/stats", (req, res) => {
+      res.set("Cache-Control", "public, max-age=60");
+      res.json({ ok: true, stats: appStats() });
+    });
+    web.post("/app/v1/apps/view", expressLib.json({ limit: "2kb" }), (req, res) => {
+      res.set("Cache-Control", "no-store");
+      try {
+        const adid = appAdid(req), key = String((req.body && req.body.key) || "").slice(0, 200);
+        if (!adid) return fail(res, 400, "Missing device id.");
+        if (limited("av|" + adid, 2000, 3600000)) return res.json({ ok: true, counted: false }); // flood guard only
+        if (!key || !d.byKey(key)) return res.json({ ok: true, counted: false });
+        res.json({ ok: true, counted: countView(key, visitorHash(req), true) });
+      } catch (e) { console.warn("app view:", e.message); res.json({ ok: true, counted: false }); }
+    });
 
     // ---- iOS app: sync the account's certificates down to the on-device signer ----
     // Bearer-authenticated (accounts only).  Locked (admin-provided) certs are included with locked:true; the app keeps
@@ -1868,7 +1898,8 @@ lookup();loadHist();try{var r=sessionStorage.getItem('air:dec');if(r){$('go').di
   function countDownload(req, key, ver) {
     if (!isHumanGet(req)) return;
     try {
-      if (dlSeen.run(key, visitorHash(req)).changes) upsert.run(key, ver, new Date().toISOString().slice(0, 10));
+      // website: one per visitor per app; iOS app (sends its ADID): every download counts
+      if (appAdid(req) || dlSeen.run(key, visitorHash(req)).changes) upsert.run(key, ver, new Date().toISOString().slice(0, 10));
     } catch (e) { console.warn("Download count failed:", e.message); }
   }
   function download(req, res) {

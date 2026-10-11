@@ -639,6 +639,7 @@ struct SourcesView: View {
 private struct SourceDetailScreen: View {
     let source: RepoSource
     @ObservedObject private var store = SourceStore.shared
+    @ObservedObject private var appStats = AppStatsStore.shared
     @ObservedObject private var signed = SignedStore.shared
     @Environment(\.dismiss) private var dismiss
 
@@ -750,6 +751,7 @@ private struct SourceDetailScreen: View {
             .floatingGlassBar(edge: .top)
         }
         .background(Color.black.ignoresSafeArea())
+        .task { await appStats.refresh() }
         .task {
             if let cached = store.cachedParsedRepo(for: current) {
                 parsed = cached
@@ -963,7 +965,11 @@ private struct SourceDetailScreen: View {
                         .frame(width: 30, height: 30).foregroundStyle(Theme.accent)
                     }
                     .disabled(downloading != nil || app.downloadURL == nil)
-                    Text("Views: \(app.downloads)").font(.system(size: 11)).foregroundStyle(Theme.subtle)
+                    HStack(spacing: 6) {
+                        Label(appStats.downloadsText(app), systemImage: "arrow.down.circle")
+                        Label(appStats.viewsText(app), systemImage: "eye")
+                    }
+                    .font(.system(size: 10)).foregroundStyle(Theme.subtle).lineLimit(1)
                 }
             }
             .contentShape(Rectangle())
@@ -1006,6 +1012,7 @@ private struct SourceDetailScreen: View {
         do {
             let dest = try await IPADownloader.shared.download(app) { p in Task { @MainActor in progress = p } }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+            AppStatsStore.shared.noteDownload(app)
             SignQueue.shared.enqueue(dest)
         } catch { self.error = error.localizedDescription }
         downloading = nil
@@ -1053,6 +1060,8 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
         return try await withCheckedThrowingContinuation { cont in
             var req = URLRequest(url: src)
             req.setValue("unzip-drop-ios", forHTTPHeaderField: "User-Agent")
+            // Our own host counts the download per device; never send the device id to third-party hosts.
+            if let h = src.host, h == URL(string: ZefvAccount.apiBase)?.host { req.setValue(MDID.current, forHTTPHeaderField: "X-AS-ADID") }
             let task = session.downloadTask(with: req)
             lock.lock(); handlers[task.taskIdentifier] = (progress, { cont.resume(with: $0) }, dest); lock.unlock()
             task.resume()
@@ -1089,6 +1098,7 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
 struct AppDetailSheet: View {
     let source: RepoSource
     let group: AppGroup
+    @ObservedObject private var appStats = AppStatsStore.shared
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var signed = SignedStore.shared
 
@@ -1158,6 +1168,10 @@ struct AppDetailSheet: View {
         }
         .background(Color.black.ignoresSafeArea())
         .onAppear { selectedID = group.latest.id; refreshDevice() }
+        .task {
+            await AppStatsStore.shared.reportView(bundle: group.latest.bundle)
+            await AppStatsStore.shared.refresh(force: true)
+        }
         .onChange(of: selectedID) { _ in refreshDevice() }
     }
 
@@ -1192,7 +1206,8 @@ struct AppDetailSheet: View {
                 stat("v\(app.version)", "VERSION")
                 stat(app.sizeMB, "SIZE")
                 stat(updatedText, "UPDATED")
-                stat(app.downloads, "DOWNLOADS")
+                stat(appStats.downloadsText(app), "DOWNLOADS")
+                stat(appStats.viewsText(app), "VIEWS")
                 stat(signed.entries.filter { $0.bundleID == app.bundle }.count.description, "SIGNED")
             }
             .frame(width: 74)
@@ -1308,6 +1323,7 @@ struct AppDetailSheet: View {
         do {
             _ = try await IPADownloader.shared.download(app) { p in Task { @MainActor in progress = p } }
             onDevice = true; progress = 1
+            AppStatsStore.shared.noteDownload(app)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         } catch { self.error = error.localizedDescription }
         downloading = false

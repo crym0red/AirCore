@@ -221,7 +221,7 @@ private struct GitHubSettingsScreen: View {
         .fullScreenCover(item: $screen) { s in
             Group {
                 switch s {
-                case .github, .account, .localZSignAPI, .about, .certificates, .otaDomain:
+                case .github, .account, .localZSignAPI, .about, .certificates, .otaDomain, .extras:
                     EmptyView()
                 case .signingRequestCertificate: CertificateRequestView()
                 case .repo:  RepoScreen()
