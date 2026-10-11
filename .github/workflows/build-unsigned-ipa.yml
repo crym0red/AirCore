@@ -48,10 +48,19 @@ jobs:
           CONFIG: Release
         run: ./build.sh
 
+      - name: Locate IPA
+        shell: bash
+        run: |
+          IPA_FOUND=$(find . -path '*/build/ipa/*.ipa' -not -path './.git/*' | head -n1)
+          [ -n "$IPA_FOUND" ] || { echo "ERROR: no IPA produced"; exit 1; }
+          IPA_FOUND="$(cd "$(dirname "$IPA_FOUND")" && pwd)/$(basename "$IPA_FOUND")"
+          echo "IPA_PATH=$IPA_FOUND" >> "$GITHUB_ENV"
+          echo "LOG_PATH=$(dirname "$(dirname "$IPA_FOUND")")/xcodebuild.log" >> "$GITHUB_ENV"
+
       - name: Verify IPA is unsigned
         shell: bash
         run: |
-          IPA="$ROOT/build/ipa/unzip-drop.ipa"
+          IPA="$IPA_PATH"
           test -f "$IPA"
           rm -rf /tmp/airshare-ipa-check
           mkdir -p /tmp/airshare-ipa-check
@@ -74,7 +83,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: airshare-unsigned-ipa-${{ github.run_number }}
-          path: ${{ env.ROOT }}/build/ipa/unzip-drop.ipa
+          path: ${{ env.IPA_PATH }}
           if-no-files-found: error
           retention-days: 14
 
@@ -83,6 +92,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: airshare-unsigned-build-log-${{ github.run_number }}
-          path: ${{ env.ROOT }}/build/xcodebuild.log
+          path: ${{ env.LOG_PATH }}
           if-no-files-found: ignore
           retention-days: 14
