@@ -32,11 +32,11 @@ struct BinaryAnalysisView: View {
             }
             .navigationTitle("Binary Analysis")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar(content: {
+            .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
-            })
+            }
             .preferredColorScheme(.dark)
             .task { await load() }
             .searchable(text: $query, prompt: "Search metadata")
