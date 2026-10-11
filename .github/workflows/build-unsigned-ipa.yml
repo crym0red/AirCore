@@ -1,0 +1,73 @@
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode environment
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Make build script executable
+        run: chmod +x ./build.sh
+
+      - name: Build unsigned IPA
+        env:
+          APP_NAME: unzip-drop
+          SCHEME: unzip-drop
+          CONFIG: Release
+        run: ./build.sh
+
+      - name: Verify IPA is unsigned
+        shell: bash
+        run: |
+          IPA="build/ipa/unzip-drop.ipa"
+          test -f "$IPA"
+          rm -rf /tmp/airshare-ipa-check
+          mkdir -p /tmp/airshare-ipa-check
+          unzip -q "$IPA" -d /tmp/airshare-ipa-check
+          APP=$(find /tmp/airshare-ipa-check/Payload -maxdepth 1 -type d -name '*.app' -print -quit)
+          test -n "$APP"
+          test -f "$APP/Info.plist"
+          if [ -d "$APP/_CodeSignature" ]; then
+            echo "ERROR: _CodeSignature exists in unsigned IPA"
+            exit 1
+          fi
+          if [ -f "$APP/embedded.mobileprovision" ]; then
+            echo "ERROR: embedded.mobileprovision exists in unsigned IPA"
+            exit 1
+          fi
+          echo "Verified unsigned IPA: $IPA"
+          unzip -l "$IPA" | sed -n '1,80p'
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: airshare-unsigned-ipa-${{ github.run_number }}
+          path: build/ipa/unzip-drop.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: airshare-unsigned-build-log-${{ github.run_number }}
+          path: build/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 14
