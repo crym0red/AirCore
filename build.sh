@@ -17,7 +17,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 PROJECT="$(ls -d ./*.xcodeproj 2>/dev/null | head -n1)"
-[ -n "$PROJECT" ] || { echo "ERROR: no .xcodeproj in $ROOT"; exit 1; }
+if [ -z "$PROJECT" ]; then
+  # Not next to build.sh: look a few levels down and build from where the project lives.
+  FOUND="$(find "$ROOT" -maxdepth 4 -type d -name '*.xcodeproj' -not -path '*/build/*' -not -path '*/.git/*' 2>/dev/null | head -n1)"
+  if [ -n "$FOUND" ]; then ROOT="$(cd "$(dirname "$FOUND")" && pwd)"; cd "$ROOT"; PROJECT="./$(basename "$FOUND")"; fi
+fi
+if [ -z "$PROJECT" ]; then
+  echo "ERROR: no .xcodeproj found under $ROOT. The repo is missing the Xcode project (unzip-drop.xcodeproj)."
+  echo "Repo contents:"; ls -la "$ROOT"; find "$ROOT" -maxdepth 2 -not -path '*/.git/*' | head -80
+  exit 1
+fi
 
 BUILD_DIR="build"
 DERIVED="$BUILD_DIR/DerivedData"
