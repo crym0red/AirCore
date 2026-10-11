@@ -919,7 +919,7 @@ private struct SourceDetailScreen: View {
 
     private func appRow(_ g: AppGroup) -> some View {
         let app = g.latest
-        let have = signed.entries.contains { $0.bundleID == app.bundle } || IPAInbox.has(app)
+        let have = IPAInbox.has(app)
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 14) {
                 SourceIcon(url: app.iconURL, side: 56, fallback: app.name)
@@ -957,7 +957,7 @@ private struct SourceDetailScreen: View {
                                     Circle().trim(from: 0, to: max(0.05, progress)).stroke(Theme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
                                 }
                             } else if have {
-                                Image(systemName: "sdcard.fill").font(.system(size: 20, weight: .bold))
+                                Image(systemName: "checkmark").font(.system(size: 20, weight: .bold))
                             } else {
                                 Image(systemName: "arrow.down").font(.system(size: 20, weight: .bold))
                             }
@@ -965,11 +965,6 @@ private struct SourceDetailScreen: View {
                         .frame(width: 30, height: 30).foregroundStyle(Theme.accent)
                     }
                     .disabled(downloading != nil || app.downloadURL == nil)
-                    HStack(spacing: 6) {
-                        Label(appStats.downloadsText(app), systemImage: "arrow.down.circle")
-                        Label(appStats.viewsText(app), systemImage: "eye")
-                    }
-                    .font(.system(size: 10)).foregroundStyle(Theme.subtle).lineLimit(1)
                 }
             }
             .contentShape(Rectangle())
@@ -1208,7 +1203,6 @@ struct AppDetailSheet: View {
                 stat(updatedText, "UPDATED")
                 stat(appStats.downloadsText(app), "DOWNLOADS")
                 stat(appStats.viewsText(app), "VIEWS")
-                stat(signed.entries.filter { $0.bundleID == app.bundle }.count.description, "SIGNED")
             }
             .frame(width: 74)
         }
@@ -1289,7 +1283,7 @@ struct AppDetailSheet: View {
             Button { Task { await download() } } label: {
                 VStack(spacing: 4) {
                     if downloading { ProgressView().tint(blue).frame(height: 26) }
-                    else if onDevice { Image(systemName: "sdcard.fill").font(.system(size: 24)) }
+                    else if onDevice { Image(systemName: "checkmark.circle.fill").font(.system(size: 26)) }
                     else { Image(systemName: "arrow.down.circle").font(.system(size: 26)) }
                     Text(downloading ? "Downloading" : (onDevice ? "Downloaded" : "Download")).font(.system(size: 13, weight: .semibold))
                 }

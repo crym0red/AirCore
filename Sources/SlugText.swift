@@ -66,7 +66,7 @@ struct OnboardingView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color(red: 0.027, green: 0.035, blue: 0.039).ignoresSafeArea()
 
             Group {
                 switch phase {
@@ -141,166 +141,213 @@ struct OnboardingView: View {
 
     // MARK: Welcome
 
+    private let passBG = Color(red: 0.027, green: 0.035, blue: 0.039)
+
     private var welcomeScreen: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(spacing: 0) {
-                Spacer().frame(height: 34)
-
-                brandHeader
-                    .padding(.bottom, 28)
-
-                Text("Welcome to AirShare")
-                    .font(.system(size: 30, weight: .bold))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 24)
-
-                Text("Your signing environment lives on this device.")
-                    .font(.system(size: 15))
-                    .foregroundStyle(.gray)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 30)
-                    .padding(.top, 6)
-                    .padding(.bottom, 24)
-
-                deviceInfoCard
-                    .padding(.horizontal, 28)
-                    .padding(.bottom, 25)
-
-                VStack(spacing: 14) {
-                    AirShareAutoRow(icon: "clock.arrow.circlepath", color: .green,
-                                 text: "Your local signing history stays on this device")
-                    AirShareAutoRow(icon: "bolt.fill", color: .orange,
-                                 text: "Fast local ZSign engine — no signing request leaves this device")
-                    AirShareAutoRow(icon: "lock.shield.fill", color: .blue,
-                                 text: "Certificates remain protected by the existing certificate store")
-                }
-                .padding(.horizontal, 36)
-                .padding(.bottom, 28)
-
-                Button(action: handleGetStarted) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "arrow.right.circle.fill")
-                            .font(.system(size: 18))
-                        Text("Continue")
-                            .font(.system(size: 18, weight: .semibold))
+        GeometryReader { geo in
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        HStack(spacing: 12) {
+                            brandMark(side: 48, radius: 14)
+                                .scaleEffect(logoScale)
+                            Text("AirShare")
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
+                        Spacer()
+                        Text("STEP 1 / 2")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .kerning(1.4)
+                            .foregroundStyle(.white.opacity(0.55))
                     }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 56)
-                    .background(
-                        LinearGradient(colors: [accent, accent.opacity(0.78)],
-                                       startPoint: .leading,
-                                       endPoint: .trailing)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                }
-                .scaleEffect(buttonScale)
-                .opacity(buttonOpacity)
-                .padding(.horizontal, 32)
+                    .opacity(logoOpacity)
+                    .padding(.top, 26)
 
-                VStack(spacing: 4) {
-                    Text("No account required to start signing")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.gray)
+                    (Text("Sign anything.\n").foregroundColor(.white)
+                     + Text("Keep it local.").foregroundColor(accent))
+                        .font(.system(size: 44, weight: .bold))
+                        .lineSpacing(-2)
+                        .padding(.top, 40)
+                        .opacity(logoOpacity)
+
+                    Text("Your signing environment lives on this device. No account needed.")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 310, alignment: .leading)
+                        .padding(.top, 14)
+                        .opacity(logoOpacity)
+
+                    devicePass
+                        .padding(.top, 30)
+                        .offset(y: featuresOffset)
+                        .opacity(featuresOpacity)
+
+                    HStack(alignment: .top, spacing: 10) {
+                        featureTile(icon: "clock.arrow.circlepath", color: .green,
+                                    title: "History", sub: "Stays on this device")
+                        featureTile(icon: "bolt.fill", color: .orange,
+                                    title: "Local ZSign", sub: "Nothing leaves your phone")
+                        featureTile(icon: "lock.shield.fill", color: Color(red: 0.29, green: 0.64, blue: 1),
+                                    title: "Certs", sub: "Protected by the store")
+                    }
+                    .padding(.top, 16)
+                    .offset(y: featuresOffset)
+                    .opacity(featuresOpacity)
+
+                    Spacer(minLength: 28)
+
+                    Button(action: handleGetStarted) {
+                        HStack(spacing: 10) {
+                            Text("Continue")
+                                .font(.system(size: 18, weight: .bold))
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 17, weight: .bold))
+                        }
+                        .foregroundStyle(Color(red: 0.01, green: 0.07, blue: 0.07))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 58)
+                        .background(accent, in: Capsule())
+                        .shadow(color: accent.opacity(0.35), radius: 17, y: 10)
+                    }
+                    .scaleEffect(buttonScale)
+                    .opacity(buttonOpacity)
+
                     Text("AirShare · Local ZSign API · AirShare")
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(accent.opacity(0.9))
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .kerning(0.8)
+                        .foregroundStyle(.white.opacity(0.4))
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 16)
+                        .padding(.bottom, 20)
                 }
-                .padding(.top, 18)
-                .padding(.bottom, 34)
+                .padding(.horizontal, 22)
+                .frame(minHeight: geo.size.height)
             }
         }
-    }
-
-    private var brandHeader: some View {
-        VStack(spacing: 15) {
-            Group {
-                if let image = UIImage(named: "airshare_logo") {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                } else if let image = loadResourceImage("AirShareLogo", ext: "png") {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 36)
-                            .fill(accent.opacity(0.15))
-                        Image(systemName: "signature")
-                            .font(.system(size: 58, weight: .bold))
-                            .foregroundStyle(accent)
-                    }
-                }
-            }
-            .frame(width: 180, height: 180)
-            .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 36, style: .continuous)
-                    .strokeBorder(accent.opacity(0.32), lineWidth: 1)
-            )
-            .shadow(color: accent.opacity(0.35), radius: 24, x: 0, y: 8)
-            .scaleEffect(logoScale)
-            .opacity(logoOpacity)
-
-            Text("AirShare")
-                .font(.system(size: 42, weight: .bold))
-                .foregroundStyle(.white)
-                .opacity(logoOpacity)
-        }
-    }
-
-    private var deviceInfoCard: some View {
-        HStack(alignment: .center, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(accent.opacity(0.10))
-                    .frame(width: 56, height: 56)
-                Image(systemName: "iphone.gen3")
-                    .font(.system(size: 30, weight: .light))
-                    .foregroundStyle(accent)
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(mdid)
-                    .font(.system(size: 16, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .tracking(1.5)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-
-                HStack(spacing: 5) {
-                    Circle().fill(.green).frame(width: 6, height: 6)
-                    Text("Local identity detected")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.green)
-                }
-
-                HStack(spacing: 6) {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.gray.opacity(0.7))
-                    Text(deviceDescription)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.gray)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.85)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.vertical, 16)
-        .padding(.horizontal, 18)
-        .frame(maxWidth: .infinity)
         .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.white.opacity(0.04))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .strokeBorder(Color.green.opacity(0.20), lineWidth: 1)
-                )
+            ZStack {
+                RadialGradient(colors: [accent.opacity(0.22), .clear],
+                               center: .topLeading, startRadius: 0, endRadius: 320)
+                RadialGradient(colors: [Color.orange.opacity(0.14), .clear],
+                               center: UnitPoint(x: 1.0, y: 0.25), startRadius: 0, endRadius: 200)
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
         )
+    }
+
+    private func brandMark(side: CGFloat, radius: CGFloat) -> some View {
+        Group {
+            if let image = UIImage(named: "airshare_logo") {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else if let image = loadResourceImage("AirShareLogo", ext: "png") {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                ZStack {
+                    Color(white: 0.06)
+                    Image(systemName: "signature")
+                        .font(.system(size: side * 0.45, weight: .bold))
+                        .foregroundStyle(accent)
+                }
+            }
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .strokeBorder(Color.orange.opacity(0.5), lineWidth: 1))
+        .shadow(color: Color.orange.opacity(0.35), radius: 12)
+    }
+
+    private var devicePass: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("DEVICE PASS")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .kerning(1.6)
+                        .foregroundStyle(.white.opacity(0.45))
+                    Text(mdid)
+                        .font(.system(size: 24, weight: .bold, design: .monospaced))
+                        .kerning(1.5)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                }
+                Spacer(minLength: 8)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(accent.opacity(0.14))
+                    Image(systemName: "iphone.gen3")
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(accent)
+                }
+                .frame(width: 44, height: 44)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 16)
+
+            HStack(spacing: 0) {
+                Circle().fill(passBG).frame(width: 18, height: 18).offset(x: -9)
+                PassDash().stroke(Color.white.opacity(0.16), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    .frame(height: 1)
+                Circle().fill(passBG).frame(width: 18, height: 18).offset(x: 9)
+            }
+
+            HStack {
+                HStack(spacing: 8) {
+                    Circle().fill(Color.green).frame(width: 8, height: 8)
+                        .shadow(color: .green, radius: 5)
+                    Text("Identity detected")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color.green)
+                }
+                Spacer(minLength: 8)
+                Text(deviceDescription.replacingOccurrences(of: "iPhone · ", with: ""))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 16)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(LinearGradient(colors: [Color(red: 0.063, green: 0.09, blue: 0.082), Color(red: 0.039, green: 0.055, blue: 0.05)],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+        )
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private func featureTile(icon: String, color: Color, title: String, sub: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Image(systemName: icon)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(height: 24)
+            Text(title)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.top, 14)
+            Text(sub)
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 3)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 14)
+        .padding(.bottom, 16)
+        .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
+        .background(Color(red: 0.05, green: 0.067, blue: 0.063), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.07), lineWidth: 1))
     }
 
     // MARK: Loading
@@ -326,6 +373,11 @@ struct OnboardingView: View {
 
     private var successScreen: some View {
         ZStack {
+            RadialGradient(colors: [accent.opacity(0.20), .clear],
+                           center: UnitPoint(x: 0.5, y: 0.28), startRadius: 0, endRadius: 300)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+
             ForEach(confettiPieces) { piece in
                 Circle()
                     .fill(piece.color)
@@ -334,78 +386,98 @@ struct OnboardingView: View {
                     .position(x: piece.x, y: piece.y)
             }
 
-            VStack(spacing: 22) {
-                Spacer().frame(height: 24)
-
-                Group {
-                    if let animated = AnimatedImage.named("airshare_anim") {
-                        animated
-                    } else {
-                        LoopingVideoPlayer(resource: "airshare_anim", ext: "mp4")
-                    }
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Text("STEP 2 / 2")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .kerning(1.4)
+                        .foregroundStyle(.white.opacity(0.55))
                 }
-                .frame(width: 180, height: 176)
-                .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 32, style: .continuous)
-                        .strokeBorder(accent.opacity(0.3), lineWidth: 1)
-                )
-                .shadow(color: accent.opacity(0.45), radius: 24, x: 0, y: 8)
+                .padding(.top, 26)
 
-                VStack(spacing: 10) {
-                    Text(mdid)
-                        .font(.system(size: 18, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .tracking(2)
-
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(accent)
-                        Text("Local identity ready")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 8)
-                    .background(Capsule().fill(Color.white.opacity(0.1)))
+                ZStack {
+                    Circle().strokeBorder(accent.opacity(0.18), lineWidth: 1).frame(width: 200, height: 200)
+                    Circle().strokeBorder(accent.opacity(0.34), lineWidth: 1).frame(width: 156, height: 156)
+                    Circle().fill(accent).frame(width: 112, height: 112)
+                        .shadow(color: accent.opacity(0.5), radius: 30)
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 50, weight: .heavy))
+                        .foregroundStyle(Color(red: 0.01, green: 0.07, blue: 0.07))
                 }
+                .padding(.top, 36)
 
-                Text("You're all set!")
-                    .font(.system(size: 30, weight: .bold))
+                Text("You're all set.")
+                    .font(.system(size: 40, weight: .bold))
                     .foregroundStyle(.white)
+                    .padding(.top, 26)
 
                 Text("AirShare is ready to sign, package and install apps locally.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.gray)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.white.opacity(0.62))
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal, 34)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 12)
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("DEVICE PASS")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .kerning(1.6)
+                            .foregroundStyle(.white.opacity(0.45))
+                        Text(mdid)
+                            .font(.system(size: 20, weight: .bold, design: .monospaced))
+                            .kerning(1.2)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                    }
+                    Spacer(minLength: 8)
+                    HStack(spacing: 7) {
+                        Circle().fill(Color.green).frame(width: 7, height: 7)
+                        Text("Ready").font(.system(size: 13, weight: .bold))
+                    }
+                    .foregroundStyle(Color.green)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Color.green.opacity(0.12), in: Capsule())
+                }
+                .padding(.horizontal, 18).padding(.vertical, 16)
+                .background(Color(red: 0.05, green: 0.067, blue: 0.063), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
+                .padding(.top, 30)
+
+                Spacer(minLength: 20)
 
                 Button(action: finish) {
                     Text("Continue to app")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.8))
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Color(red: 0.01, green: 0.07, blue: 0.07))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 58)
+                        .background(accent, in: Capsule())
+                        .shadow(color: accent.opacity(0.35), radius: 17, y: 10)
                 }
-                .padding(.top, 6)
-
-                Spacer(minLength: 0)
 
                 VStack(spacing: 4) {
                     HStack(spacing: 4) {
-                        Text("Made by").foregroundStyle(.gray)
+                        Text("Made by").foregroundStyle(.white.opacity(0.5))
                         Text("ᴹᴿ𝐙𝐄𝐅𝐯").foregroundStyle(.white)
                     }
                     .font(.system(size: 13))
 
                     HStack(spacing: 6) {
-                        Text("Powered by").foregroundStyle(.gray)
+                        Text("Powered by").foregroundStyle(.white.opacity(0.5))
                         Text("DELvEK.net")
                             .fontWeight(.bold)
                             .foregroundStyle(accent)
                     }
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                 }
-                .padding(.bottom, 30)
+                .padding(.top, 20)
+                .padding(.bottom, 20)
             }
+            .padding(.horizontal, 22)
         }
     }
 
@@ -543,22 +615,12 @@ struct OnboardingView: View {
 
 // MARK: - Supporting rows
 
-private struct AirShareAutoRow: View {
-    let icon: String
-    let color: Color
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: 28)
-            Text(text)
-                .font(.system(size: 14))
-                .foregroundStyle(.gray)
-            Spacer()
-        }
+private struct PassDash: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX, y: rect.midY))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        return p
     }
 }
 
