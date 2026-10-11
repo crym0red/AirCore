@@ -70,7 +70,7 @@ struct SettingsView: View {
                             SettingsRow(icon: "network", title: "AirShare Domain",
                                         subtitle: "\(ServerConfig.installHost) · certbot via Actions") { screen = .otaDomain }
                             SettingsRow(icon: "sparkles", title: "Extras",
-                                        subtitle: "Theme · Auto-update signing") { screen = .extras }
+                                        subtitle: "Auto-update signing") { screen = .extras }
                         }
 
                         SettingsSection("Support") {
@@ -367,57 +367,6 @@ private struct SettingsLink: View {
     }
 }
 
-private struct AppearanceControls: View {
-    @ObservedObject private var theme = AppTheme.shared
-
-    private func row<T: View>(icon: String, title: String, subtitle: String, @ViewBuilder trailing: () -> T) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 19, weight: .semibold)).foregroundStyle(Theme.accent).frame(width: 30)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
-                Text(subtitle).font(.system(size: 12)).foregroundStyle(Theme.subtle)
-            }
-            Spacer(minLength: 8)
-            trailing()
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            row(icon: "circle.fill", title: "Accent Color", subtitle: "Choose your preferred accent") {
-                HStack(spacing: 7) {
-                    ForEach(Array(AppTheme.presets.prefix(5)), id: \.self) { hex in
-                        Button { theme.accentHex = hex } label: {
-                            Circle().fill(Color(hex: hex)).frame(width: 27, height: 27)
-                                .overlay(Circle().stroke(theme.accentHex.uppercased() == hex.uppercased() ? Theme.text : Color.clear, lineWidth: 2))
-                        }.buttonStyle(.plain)
-                    }
-                }
-            }
-            Divider().overlay(Theme.stroke)
-            row(icon: "sun.max.fill", title: "Appearance", subtitle: "Light / Dark") {
-                Picker("Appearance", selection: Binding(get: { theme.isDark ? 1 : 0 }, set: { theme.isDark = $0 == 1 })) {
-                    Text("☀︎").tag(0); Text("☾").tag(1)
-                }
-                .pickerStyle(.segmented).frame(width: 112)
-            }
-            Divider().overlay(Theme.stroke)
-            row(icon: "photo.fill", title: "Background", subtitle: "Solid / Grid / Particles") {
-                HStack(spacing: 7) {
-                    ForEach(ThemeBackground.allCases, id: \.rawValue) { bg in
-                        Button { theme.background = bg } label: {
-                            Image(systemName: bg.icon).font(.system(size: 14, weight: .bold)).foregroundStyle(theme.background == bg ? Theme.accent : Theme.subtle)
-                                .frame(width: 29, height: 29).background(Color.white.opacity(0.05)).clipShape(Circle())
-                                .overlay(Circle().stroke(theme.background == bg ? Theme.accent : Theme.stroke, lineWidth: 1))
-                        }.buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-    }
-}
-
 private struct SourceUpdateControls: View {
     @ObservedObject private var watcher = LocalSourceUpdateWatcher.shared
     @ObservedObject private var certs = CertificateStore.shared
@@ -557,15 +506,12 @@ private struct StatusFooter: View {
     }
 }
 
-// MARK: - Extras (theme + auto-update signing)
+// MARK: - Extras (auto-update signing)
 
 private struct ExtrasScreen: View {
     var body: some View {
         DetailScreen(title: "Extras") {
             VStack(alignment: .leading, spacing: 0) {
-                SettingsSection("Theme") {
-                    AppearanceControls()
-                }
                 SettingsSection("Auto-Update Signing") {
                     SourceUpdateControls()
                 }

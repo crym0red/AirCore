@@ -57,6 +57,21 @@ struct RootView: View {
             }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: account.panelShown)
+        .overlay(alignment: .topLeading) {                    // theme palette dropdown (top bar, left)
+            if theme.panelShown {
+                ZStack(alignment: .topLeading) {
+                    Color.black.opacity(0.35).ignoresSafeArea()
+                        .onTapGesture { theme.panelShown = false }
+                    ThemePanel()
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.stroke, lineWidth: 1))
+                        .shadow(color: .black.opacity(0.5), radius: 18, y: 8)
+                        .padding(.top, 62).padding(.leading, 12)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: theme.panelShown)
 
         .task {
             await account.autoLoginIfNeeded()          // recognized ADID + device key → signed in, no password

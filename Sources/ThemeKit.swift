@@ -65,51 +65,76 @@ struct ThemePaletteButton: View {
     }
 }
 
-// MARK: - Dropdown panel
+// MARK: - Dropdown panel (compact)
 
 struct ThemePanel: View {
     @ObservedObject private var theme = AppTheme.shared
-    @State private var showSwatches = false
-    @State private var picked: Color = Theme.accent
+    @State private var wheelShown = false
+    @State private var hexText = ""
+    @State private var hue: Double = 0
+    @State private var sat: Double = 1
+    @State private var bri: Double = 1
+    @FocusState private var hexFocus: Bool
+    @State private var lastLive = Date.distantPast
+
+    private var draft: Color { Color(hue: hue, saturation: sat, brightness: bri) }
 
     var body: some View {
         VStack(spacing: 8) {
-            // Accent color
-            VStack(spacing: 0) {
-                Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { showSwatches.toggle() } } label: {
-                    row(icon: nil, swatch: Theme.accent, label: "ACCENT COLOR", value: "#\(theme.accentHex.uppercased())") {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.subtle)
-                            .rotationEffect(.degrees(showSwatches ? 180 : 0))
-                    }
+            // Square color box · hex input · chevron
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(wheelShown ? draft : theme.accent)
+                    .frame(width: 30, height: 30)
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.white.opacity(0.35), lineWidth: 1))
+                HStack(spacing: 2) {
+                    Text("#").font(.system(size: 14, weight: .bold, design: .monospaced)).foregroundStyle(Theme.subtle)
+                    TextField("FF9A1F", text: $hexText)
+                        .font(.system(size: 14, weight: .bold, design: .monospaced)).foregroundStyle(Theme.text)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .focused($hexFocus).submitLabel(.done)
+                        .onSubmit { commitHex() }
+                        .onChange(of: hexText) { v in
+                            let c = String(v.uppercased().filter { $0.isHexDigit }.prefix(6))
+                            if c != v { hexText = c }
+                        }
+                }
+                .padding(.horizontal, 8).frame(height: 30)
+                .background(Color.white.opacity(0.07)).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                Button {
+                    hexFocus = false
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { wheelShown.toggle() }
+                } label: {
+                    Image(systemName: "chevron.down").font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.accent)
+                        .rotationEffect(.degrees(wheelShown ? 180 : 0)).frame(width: 28, height: 30)
                 }
                 .buttonStyle(.plain)
+            }
 
-                if showSwatches {
+            if wheelShown {
+                VStack(spacing: 10) {
+                    HueWheel(hue: $hue, sat: $sat, bri: bri, onChange: { commitLive() }, onEnd: { commitDraft() })
+                        .frame(width: 150, height: 150)
                     HStack(spacing: 8) {
-                        ForEach(AppTheme.presets, id: \.self) { hex in
-                            Button { theme.accentHex = hex; picked = Color(hex: hex) } label: {
-                                Circle().fill(Color(hex: hex)).frame(width: 20, height: 20)
-                                    .overlay(Circle().stroke(Color.white.opacity(theme.accentHex.uppercased() == hex ? 0.9 : 0.15), lineWidth: 2))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        ColorPicker("", selection: $picked, supportsOpacity: false)
-                            .labelsHidden().frame(width: 22, height: 22)
-                            .onChange(of: picked) { c in if let h = c.hexString() { theme.accentHex = h } }
+                        Image(systemName: "sun.min").font(.system(size: 11)).foregroundStyle(Theme.subtle)
+                        Slider(value: $bri, in: 0.15...1) { editing in if !editing { commitDraft() } }.tint(Theme.accent)
+                            .onChange(of: bri) { _ in commitLive() }
+                        Image(systemName: "sun.max.fill").font(.system(size: 11)).foregroundStyle(Theme.subtle)
                     }
-                    .padding(.horizontal, 12).padding(.bottom, 10)
+                    HStack(spacing: 7) {
+                        ForEach(AppTheme.presets.prefix(8), id: \.self) { hex in
+                            Button { theme.accentHex = hex; sync() } label: {
+                                Circle().fill(Color(hex: hex)).frame(width: 16, height: 16)
+                                    .overlay(Circle().stroke(Color.white.opacity(theme.accentHex.uppercased() == hex ? 0.95 : 0.15), lineWidth: 1.5))
+                            }.buttonStyle(.plain)
+                        }
+                    }
                 }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            .background(panelCard)
 
-            // Appearance
-            row(icon: theme.isDark ? "moon.fill" : "sun.max.fill", swatch: nil, label: "APPEARANCE", value: theme.isDark ? "Dark mode" : "Light mode") {
-                Toggle("", isOn: $theme.isDark).labelsHidden().tint(Theme.accent)
-            }
-            .background(panelCard)
+            Divider().overlay(Theme.stroke)
 
-            // Background
+            // Dynamic backgrounds dropdown
             Menu {
                 ForEach(ThemeBackground.allCases) { b in
                     Button { theme.background = b } label: {
@@ -117,40 +142,97 @@ struct ThemePanel: View {
                     }
                 }
             } label: {
-                row(icon: theme.background.icon, swatch: nil, label: "BACKGROUND", value: theme.background.title) {
-                    Image(systemName: "chevron.down").font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.subtle)
+                HStack(spacing: 8) {
+                    Image(systemName: theme.background.icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.accent).frame(width: 18)
+                    Text("Background").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.subtle)
+                    Spacer(minLength: 4)
+                    Text(theme.background.title).font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.text)
+                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.subtle)
                 }
+                .padding(.horizontal, 6).frame(height: 28).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .background(panelCard)
+
+            // Light / dark
+            HStack(spacing: 8) {
+                Image(systemName: theme.isDark ? "moon.fill" : "sun.max.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.accent).frame(width: 18)
+                Text(theme.isDark ? "Dark" : "Light").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.subtle)
+                Spacer()
+                Toggle("", isOn: $theme.isDark).labelsHidden().tint(Theme.accent).scaleEffect(0.8)
+            }
+            .padding(.horizontal, 6).frame(height: 26)
         }
-        .padding(8)
-        .frame(width: 270)
+        .padding(12)
+        .frame(width: 230)
         .background(Theme.bg)
+        .onAppear { sync() }
     }
 
-    private var panelCard: some View {
-        RoundedRectangle(cornerRadius: 14)
-            .fill(Theme.accent.opacity(theme.isDark ? 0.10 : 0.12))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.accent.opacity(0.25), lineWidth: 1))
+    private func sync() {
+        hexText = theme.accentHex.uppercased()
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(Color(hex: theme.accentHex)).getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        hue = Double(h); sat = Double(s); bri = Double(b)
     }
 
-    private func row<T: View>(icon: String?, swatch: Color?, label: String, value: String, @ViewBuilder trailing: () -> T) -> some View {
-        HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 9).fill(swatch ?? Theme.accent.opacity(0.18))
-                if let icon { Image(systemName: icon).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.accent) }
-            }
-            .frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(label).font(.system(size: 9, weight: .bold)).kerning(1.1).foregroundStyle(Theme.subtle)
-                Text(value).font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.text)
-            }
-            Spacer(minLength: 8)
-            trailing()
+    private func commitHex() {
+        hexFocus = false
+        let c = hexText.uppercased()
+        guard c.count == 6 || c.count == 3 else { hexText = theme.accentHex.uppercased(); return }
+        let full = c.count == 3 ? c.map { "\($0)\($0)" }.joined() : c
+        theme.accentHex = full
+        sync()
+    }
+
+    /// Live update while dragging (throttled to ~20/s so the re-skin stays smooth).
+    private func commitLive() {
+        let now = Date()
+        guard now.timeIntervalSince(lastLive) > 0.05 else { return }
+        lastLive = now
+        commitDraft()
+    }
+
+    private func commitDraft() {
+        if let h = draft.hexString() {
+            theme.accentHex = h.replacingOccurrences(of: "#", with: "").uppercased()
+            hexText = theme.accentHex
         }
-        .padding(.horizontal, 12).padding(.vertical, 10)
-        .contentShape(Rectangle())
+    }
+}
+
+/// Hue (angle) / saturation (radius) wheel. Updates the accent live while dragging.
+private struct HueWheel: View {
+    @Binding var hue: Double
+    @Binding var sat: Double
+    let bri: Double
+    let onChange: () -> Void
+    let onEnd: () -> Void
+
+    var body: some View {
+        GeometryReader { g in
+            let d = Swift.min(g.size.width, g.size.height), r = d / 2
+            ZStack {
+                Circle().fill(AngularGradient(gradient: Gradient(colors: (0...12).map { Color(hue: Double($0) / 12, saturation: 1, brightness: 1) }), center: .center))
+                Circle().fill(RadialGradient(colors: [.white, .white.opacity(0)], center: .center, startRadius: 0, endRadius: r))
+                Circle().fill(Color.black.opacity(1 - bri))
+                Circle().fill(Color(hue: hue, saturation: sat, brightness: bri)).frame(width: 18, height: 18)
+                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    .shadow(color: .black.opacity(0.4), radius: 2)
+                    .position(x: r + CGFloat(sat) * r * CGFloat(cos(hue * 2 * .pi)),
+                              y: r + CGFloat(sat) * r * CGFloat(sin(hue * 2 * .pi)))
+            }
+            .frame(width: d, height: d)
+            .contentShape(Circle())
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { v in
+                    let dx = v.location.x - r, dy = v.location.y - r
+                    var a = atan2(dy, dx) / (2 * .pi); if a < 0 { a += 1 }
+                    hue = Double(a)
+                    sat = Double(Swift.min(sqrt(dx * dx + dy * dy) / r, 1))
+                    onChange()
+                }
+                .onEnded { _ in onEnd() })
+        }
     }
 }
 

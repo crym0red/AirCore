@@ -291,14 +291,26 @@ struct DecryptView: View {
     @ObservedObject private var c = DecryptClient.shared
     @State private var query = ""
     @State private var showVersions = false
+    @State private var showSearch = false
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         ZStack {
             Theme.bg.ignoresSafeArea()
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 12) {
-                    AirShareSearchField(placeholder: "Search the App Store or paste a link", text: $query)
-                        .disabled(c.busy)
+                    if showSearch {
+                        HStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass").foregroundStyle(Theme.subtle)
+                            TextField("Search the App Store or paste a link", text: $query)
+                                .autocorrectionDisabled().textInputAutocapitalization(.never).foregroundStyle(Theme.text)
+                                .focused($searchFocused).submitLabel(.search)
+                                .onSubmit { Task { await c.search(query) }; closeSearch() }
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 11)
+                        .background(Color.white.opacity(0.06)).clipShape(Capsule())
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                     if c.searching {
                         HStack { Spacer(); ProgressView().tint(Theme.accent); Spacer() }.padding(.vertical, 6)
                     }
@@ -315,7 +327,13 @@ struct DecryptView: View {
             }
             .safeAreaInset(edge: .top, spacing: 0) {
                 TabTitleBar(title: "Decrypt") {
-                    Image(systemName: "lock.fill").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.accent)
+                    HStack(spacing: 14) {
+                        Button { openSearch() } label: {
+                            Image(systemName: "magnifyingglass").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.accent)
+                        }
+                        .buttonStyle(.plain).disabled(c.busy).opacity(c.busy ? 0.4 : 1)
+                        Image(systemName: "lock.fill").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.accent)
+                    }
                 }
             }
         }
@@ -326,6 +344,25 @@ struct DecryptView: View {
         }
         .task { await c.loadHistory() }
         .sheet(isPresented: $showVersions) { versionsSheet }
+    }
+
+    private func openSearch() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { showSearch = true }
+        searchFocused = true
+    }
+
+    private func closeSearch() {
+        searchFocused = false
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { showSearch = false }
+    }
+
+    /// Percent parsed from the server message ("... 6%"), nil when none is reported.
+    private var percent: Double? {
+        let m = c.message
+        guard let r = m.range(of: #"(\d{1,3}(?:\.\d+)?)\s*%"#, options: .regularExpression) else { return nil }
+        let num = m[r].filter { $0.isNumber || $0 == "." }
+        guard let v = Double(num) else { return nil }
+        return Swift.min(Swift.max(v, 0), 100) / 100
     }
 
     // MARK: Cards
@@ -347,7 +384,7 @@ struct DecryptView: View {
         Card {
             VStack(spacing: 0) {
                 ForEach(Array(c.results.enumerated()), id: \.element.id) { idx, app in
-                    Button { c.select(app); query = "" } label: {
+                    Button { c.select(app); query = ""; closeSearch() } label: {
                         appRow(icon: app.icon, title: app.name, subtitle: [app.dev, app.version.isEmpty ? "" : "v\(app.version)"].filter { !$0.isEmpty }.joined(separator: " · "), trailing: "chevron.right")
                     }
                     .buttonStyle(.plain)
@@ -409,8 +446,12 @@ struct DecryptView: View {
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(titleForPhase).font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.text)
-                        Text(c.phase == .failed ? (c.error ?? "Decrypt failed.") : subtitleForPhase)
-                            .font(.system(size: 12)).foregroundStyle(c.phase == .failed ? Color.orange : Theme.subtle)
+                        if c.busy {
+                            SlimProgress(value: c.phase == .downloading ? nil : percent)
+                        } else {
+                            Text(c.phase == .failed ? (c.error ?? "Decrypt failed.") : subtitleForPhase)
+                                .font(.system(size: 12)).foregroundStyle(c.phase == .failed ? Color.orange : Theme.subtle)
+                        }
                     }
                     Spacer(minLength: 0)
                     if c.busy {
@@ -565,5 +606,40 @@ struct DecryptView: View {
             Image(systemName: trailing).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.accent)
         }
         .padding(.vertical, 8).contentShape(Rectangle())
+    }
+}
+
+// MARK: - Slim progress bar
+
+struct SlimProgress: View {
+    /// 0...1, or nil for an indeterminate sweep.
+    let value: Double?
+    @State private var sweep = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.10))
+                    if let value {
+                        Capsule().fill(Theme.accent)
+                            .frame(width: Swift.max(4, g.size.width * value))
+                            .animation(.easeOut(duration: 0.4), value: value)
+                    } else {
+                        Capsule().fill(Theme.accent)
+                            .frame(width: g.size.width * 0.3)
+                            .offset(x: sweep ? g.size.width * 0.7 : 0)
+                            .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: sweep)
+                    }
+                }
+                .clipShape(Capsule())
+            }
+            .frame(height: 5)
+            if let value {
+                Text("\(Int((value * 100).rounded()))%")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.subtle)
+            }
+        }
+        .onAppear { sweep = true }
     }
 }
