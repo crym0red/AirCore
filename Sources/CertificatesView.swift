@@ -216,6 +216,7 @@ struct CertificatesScreen: View {
             }.frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(c.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                if c.isLocked { Text("PROVIDED BY ADMIN").font(.system(size: 9, weight: .heavy, design: .monospaced)).foregroundStyle(Theme.accent) }
                 if let t = info.team { Text(t).font(.caption).foregroundStyle(Theme.subtle).lineLimit(1) }
                 if let e = info.expires {
                     let expired = e < Date()
@@ -225,6 +226,9 @@ struct CertificatesScreen: View {
                 deviceLine(info, certName: c.name)
             }
             Spacer()
+            if c.isLocked {
+                Image(systemName: "lock.fill").font(.caption).foregroundStyle(Theme.subtle)
+            }
             if active {
                 Text("ACTIVE").font(.system(size: 9, weight: .heavy, design: .monospaced)).kerning(1)
                     .padding(.horizontal, 7).padding(.vertical, 3)
@@ -232,9 +236,11 @@ struct CertificatesScreen: View {
             } else {
                 Button("Use") { store.activeID = c.id }.font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)
             }
-            Menu {
-                Button(role: .destructive) { store.delete(c) } label: { Label("Delete", systemImage: "trash") }
-            } label: { Image(systemName: "ellipsis.circle").foregroundStyle(Theme.subtle) }
+            if !c.isLocked {
+                Menu {
+                    Button(role: .destructive) { store.delete(c) } label: { Label("Delete", systemImage: "trash") }
+                } label: { Image(systemName: "ellipsis.circle").foregroundStyle(Theme.subtle) }
+            }
         }
         .padding(12).background(Theme.card)
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(active ? Theme.accent.opacity(0.4) : Theme.stroke, lineWidth: 1))

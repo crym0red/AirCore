@@ -15,9 +15,14 @@ struct Certificate: Codable, Identifiable, Equatable, Sendable {
     var p12RelPath: String
     var provisionRelPath: String
     var addedAt: Date
+    /// Admin-provided account certificate: kept out of the Files-visible Documents folder,
+    /// excluded from backups, and not removable / exportable from the app.
+    var locked: Bool? = nil
 
-    var p12URL: URL { AppPaths.documents.appendingPathComponent(p12RelPath) }
-    var provisionURL: URL { AppPaths.documents.appendingPathComponent(provisionRelPath) }
+    var isLocked: Bool { locked == true }
+    private var baseDir: URL { isLocked ? AppPaths.lockedCerts : AppPaths.documents }
+    var p12URL: URL { baseDir.appendingPathComponent(p12RelPath) }
+    var provisionURL: URL { baseDir.appendingPathComponent(provisionRelPath) }
 }
 
 /// In-memory cert material handed to the signer.
@@ -51,6 +56,15 @@ struct SignedEntry: Codable, Identifiable, Equatable, Sendable {
 nonisolated enum AppPaths {
     static var documents: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+    /// Private storage for locked certificates (Application Support is not exposed through the Files app).
+    static var lockedCerts: URL {
+        var u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AirShare/locked-certs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
+        var v = URLResourceValues(); v.isExcludedFromBackup = true
+        try? u.setResourceValues(v)
+        return u
     }
     static func dir(_ name: String) -> URL {
         let u = documents.appendingPathComponent(name, isDirectory: true)
@@ -116,18 +130,21 @@ final class CertificateStore: ObservableObject {
     }
 
     @discardableResult
-    func importPair(name: String, p12: Data, password: String, provision: Data, makeActive: Bool = true) throws -> Certificate {
+    func importPair(name: String, p12: Data, password: String, provision: Data, makeActive: Bool = true, locked: Bool = false) throws -> Certificate {
         guard Self.p12IsValid(p12, password: password) else { throw CertError.badPassword }
         let id = UUID().uuidString
         let p12Rel  = "certs/\(id).p12"
         let provRel = "certs/\(id).mobileprovision"
+        let base = locked ? AppPaths.lockedCerts : AppPaths.documents
         do {
-            try p12.write(to: AppPaths.documents.appendingPathComponent(p12Rel))
-            try provision.write(to: AppPaths.documents.appendingPathComponent(provRel))
+            try? FileManager.default.createDirectory(at: base.appendingPathComponent("certs", isDirectory: true), withIntermediateDirectories: true)
+            try p12.write(to: base.appendingPathComponent(p12Rel))
+            try provision.write(to: base.appendingPathComponent(provRel))
         } catch { throw CertError.importFailed }
         Keychain.set("cert-" + id, password)
         let cert = Certificate(id: id, name: name.isEmpty ? "Certificate" : name,
-                               p12RelPath: p12Rel, provisionRelPath: provRel, addedAt: Date())
+                               p12RelPath: p12Rel, provisionRelPath: provRel, addedAt: Date(),
+                               locked: locked ? true : nil)
         certificates.append(cert)
         profileInfoCache[id] = Self.profileInfo(provision)
         save()

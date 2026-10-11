@@ -141,6 +141,7 @@ final class ZefvAccount: ObservableObject {
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.kLastAuthenticatedAt)
             await StaffGate.shared.refresh()
             WidgetDataManager.shared.refresh()
+            await syncCertificates()
             return true
         } catch { lastError = (error as? Err)?.message ?? error.localizedDescription; return false }
     }
@@ -158,6 +159,7 @@ final class ZefvAccount: ObservableObject {
             let r = UserRole(rawValue: (o["role"] as? String) ?? "member") ?? .member
             role = r; _ = Keychain.set("zefv_role", r.rawValue)
             await StaffGate.shared.refresh()
+            await syncCertificates()
         } catch let e as Err {
             if case .server(let m) = e, m.lowercased().contains("session") { await clearLocal() }
             lastError = e.message
@@ -269,7 +271,66 @@ final class ZefvAccount: ObservableObject {
 
     func logout() async {
         if let tok = sessionToken { _ = try? await post("account", ["action": "logout", "token": tok]) }
+        removeSyncedCertificates()
         await clearLocal()
+    }
+
+    // MARK: - Certificate sync (account → on-device signer)
+
+    private static let kSyncedCerts = "as_synced_certs"   // [serverCertId: localCertId]
+
+    private var syncedMap: [String: String] {
+        get { (UserDefaults.standard.dictionary(forKey: Self.kSyncedCerts) as? [String: String]) ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: Self.kSyncedCerts) }
+    }
+
+    /// Pulls the account's certificates (.p12 + profile + password) into the local store.
+    /// Admin-provided (locked) certs sync too, but are stored privately and can't be exported or deleted in the app.
+    /// New ones are imported, ones removed from the account are dropped, existing ones are left alone.
+    @discardableResult
+    func syncCertificates() async -> Int {
+        guard let tok = sessionToken, !tok.isEmpty, let url = endpoint("certificates") else { return 0 }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 60
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+        guard let (d, r) = try? await URLSession.shared.data(for: req),
+              (r as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              let list = obj["certificates"] as? [[String: Any]] else { return 0 }
+
+        let store = CertificateStore.shared
+        var map = syncedMap
+        var seen = Set<String>()
+        var added = 0
+        for c in list {
+            guard let sid = c["id"] as? String else { continue }
+            seen.insert(sid)
+            if let lid = map[sid], store.certificates.contains(where: { $0.id == lid }) { continue }
+            guard let p12 = (c["p12"] as? String).flatMap({ Data(base64Encoded: $0) }),
+                  let prov = (c["prov"] as? String).flatMap({ Data(base64Encoded: $0) }),
+                  let pw = c["password"] as? String else { continue }
+            let name = (c["name"] as? String) ?? "Certificate"
+            if let cert = try? store.importPair(name: name, p12: p12, password: pw, provision: prov, makeActive: store.active == nil, locked: (c["locked"] as? Bool) ?? false) {
+                map[sid] = cert.id
+                added += 1
+            }
+        }
+        for (sid, lid) in Array(map) where !seen.contains(sid) {
+            if let local = store.certificates.first(where: { $0.id == lid }) { store.delete(local) }
+            map[sid] = nil
+        }
+        syncedMap = map
+        return added
+    }
+
+    /// Certificates that came from the account leave the device with the session.
+    private func removeSyncedCertificates() {
+        let store = CertificateStore.shared
+        for lid in syncedMap.values {
+            if let local = store.certificates.first(where: { $0.id == lid }) { store.delete(local) }
+        }
+        syncedMap = [:]
     }
 
     enum Err: Error { case badURL, server(String)

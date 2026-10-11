@@ -239,7 +239,7 @@ nonisolated enum ZefvCert {
         let (data, resp) = try await URLSession.shared.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code < 400, !data.isEmpty else {
-            throw CertError.badPack("\(url.host ?? "VPS") → HTTP \(code). Check the cert source URL/token in Settings › AirShare Domain.")
+            throw CertError.badPack("\(url.host ?? "VPS") → HTTP \(code). Try again in a moment.")
         }
         let pack: VPSPack
         do { pack = try JSONDecoder().decode(VPSPack.self, from: data) } catch { throw CertError.badPack("VPS returned an unreadable cert pack") }

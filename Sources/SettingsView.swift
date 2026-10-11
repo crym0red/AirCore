@@ -17,7 +17,7 @@ private enum Screen: Identifiable, Hashable {
     case about, repo, token
     case dylibTemplate, ipaTemplate
     case certificates, otaDomain, certInspector, transparency, recoverData
-    case tutorials
+    case tutorials, extras
     var id: String {
         switch self {
         case .github: return "github"; case .account: return "account"; case .localZSignAPI: return "local-zsign-api"
@@ -26,6 +26,7 @@ private enum Screen: Identifiable, Hashable {
         case .dylibTemplate: return "tpl-dylib"; case .ipaTemplate: return "tpl-ipa"
         case .certificates: return "certs"; case .otaDomain: return "ota"; case .certInspector: return "inspect"; case .transparency: return "transparency"; case .recoverData: return "recover"
         case .tutorials: return "tutorials"
+        case .extras: return "extras"
         }
     }
 }
@@ -43,14 +44,6 @@ struct SettingsView: View {
                 Theme.bg.ignoresSafeArea()
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
-
-                        SettingsSection("Appearance") {
-                            AppearanceControls()
-                        }
-
-                        SettingsSection("Auto-Update Signing") {
-                            SourceUpdateControls()
-                        }
 
                         SettingsSection("General") {
                             SettingsRow(icon: "info.circle.fill", title: "About", subtitle: "App information and version") { screen = .about }
@@ -76,12 +69,15 @@ struct SettingsView: View {
                                         subtitle: "127.0.0.1:\(LocalZSignAPI.shared.port) · loopback signing control") { screen = .localZSignAPI }
                             SettingsRow(icon: "network", title: "AirShare Domain",
                                         subtitle: "\(ServerConfig.installHost) · certbot via Actions") { screen = .otaDomain }
+                            SettingsRow(icon: "sparkles", title: "Extras",
+                                        subtitle: "Theme · Auto-update signing") { screen = .extras }
                         }
 
                         SettingsSection("Support") {
-                            SettingsLink(icon: "globe", title: "MRzefV", subtitle: "mrzefv.com | Founder MRzefv",
-                                         url: URL(string: "https://mrzefv.com")!)
-                            SettingsLink(icon: "network", title: "Delvek.net",
+                            SettingsLink(icon: "globe", imageName: "airshare_logo", title: "AirShare",
+                                         subtitle: "airshare.lol | Official site",
+                                         url: URL(string: "https://airshare.lol")!)
+                            SettingsLink(icon: "network", imageName: "delvek_logo", title: "Delvek.net",
                                          subtitle: "delvek.net | Repo and support",
                                          url: URL(string: "https://delvek.net")!)
                         }
@@ -119,6 +115,7 @@ struct SettingsView: View {
                 case .dylibTemplate: DylibTemplateScreen()
                 case .ipaTemplate:   IPATemplateScreen()
                 case .tutorials: TutorialsListScreen()
+                case .extras: ExtrasScreen()
                 }
             }
             .environmentObject(config)
@@ -286,6 +283,7 @@ private let rowHeight: CGFloat = 64
 
 private struct RowBody: View {
     let icon: String
+    var imageName: String? = nil
     let title: String
     let subtitle: String
     var trailingIcon: String = "arrow.up.forward.square"
@@ -295,9 +293,16 @@ private struct RowBody: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Theme.accent.opacity(0.14))
-                Image(systemName: icon)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
+                if let imageName, let ui = UIImage(named: imageName) {
+                    Image(uiImage: ui)
+                        .resizable().scaledToFill()
+                        .frame(width: 38, height: 38)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                } else {
+                    Image(systemName: icon)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                }
             }
             .frame(width: 38, height: 38)
 
@@ -334,6 +339,7 @@ private struct SettingsRow: View {
 
 private struct SettingsLink: View {
     let icon: String
+    var imageName: String? = nil
     let title: String
     let subtitle: String
     let url: URL
@@ -341,7 +347,7 @@ private struct SettingsLink: View {
 
     var body: some View {
         Button { openURL(url) } label: {
-            RowBody(icon: icon, title: title, subtitle: subtitle, trailingIcon: "safari")
+            RowBody(icon: icon, imageName: imageName, title: title, subtitle: subtitle, trailingIcon: "safari")
         }
         .buttonStyle(RowPressStyle())
     }
@@ -533,6 +539,23 @@ private struct StatusFooter: View {
         .onTapGesture {
             UIPasteboard.general.string = staff.mdid
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+    }
+}
+
+// MARK: - Extras (theme + auto-update signing)
+
+private struct ExtrasScreen: View {
+    var body: some View {
+        DetailScreen(title: "Extras") {
+            VStack(alignment: .leading, spacing: 0) {
+                SettingsSection("Theme") {
+                    AppearanceControls()
+                }
+                SettingsSection("Auto-Update Signing") {
+                    SourceUpdateControls()
+                }
+            }
         }
     }
 }
@@ -1229,9 +1252,6 @@ private struct OTAHostScreen: View {
 
 private struct VPSCertScreen: View {
     @ObservedObject var st: OTAState
-    @State private var sourceURL = ServerConfig.certSourceURL
-    @State private var sourceToken = ServerConfig.certSourceToken
-    @State private var sourceSaved = false
     @State private var refreshing = false
     @State private var error: String?
     @State private var note: String?
@@ -1254,22 +1274,7 @@ private struct VPSCertScreen: View {
             } footer: {
                 Text("certbot on the VPS renews *.airshare.lol through the Cloudflare DNS API; the app auto-pulls on install when within \(ServerConfig.refreshBufferDays) days of expiry. Pull latest forces it now.").foregroundStyle(Theme.subtle)
             }
-
-            Section {
-                TField(label: "URL", text: $sourceURL, placeholder: ServerConfig.defaultCertSourceURL, keyboard: .URL)
-                TField(label: "Token", text: $sourceToken, placeholder: ServerConfig.defaultCertSourceToken, keyboard: .asciiCapable)
-                TButton(title: sourceSaved ? "Saved" : "Save source", icon: sourceSaved ? "checkmark.circle.fill" : "server.rack") {
-                    ServerConfig.setCertSourceURL(sourceURL.trimmingCharacters(in: .whitespacesAndNewlines))
-                    ServerConfig.setCertSourceToken(sourceToken.trimmingCharacters(in: .whitespacesAndNewlines))
-                    sourceURL = ServerConfig.certSourceURL; sourceToken = ServerConfig.certSourceToken; sourceSaved = true
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                }
-            } header: {
-                Text("Cert source")
-            }
         }
-        .onChange(of: sourceURL) { _ in sourceSaved = false }
-        .onChange(of: sourceToken) { _ in sourceSaved = false }
     }
 
     private func refresh() async {
@@ -1277,7 +1282,7 @@ private struct VPSCertScreen: View {
         do {
             _ = try await ZefvCert.fetch()
             OTAFiles.exportPublicChain(); st.reload()
-            note = "Pulled from \(URL(string: ServerConfig.certSourceURL)?.host ?? "VPS")"
+            note = "Certificate pulled from AirShare"
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         } catch { self.error = error.localizedDescription }
         refreshing = false

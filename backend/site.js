@@ -766,6 +766,29 @@ function mountSite(web, d0) {
     try { require("./ota").mount(web, { db, express: expressLib }); }
     catch (e) { console.warn("OTA cert service disabled:", e.message); }
 
+    // ---- iOS app: sync the account's certificates down to the on-device signer ----
+    // Bearer-authenticated (accounts only).  Locked (admin-provided) certs are included with locked:true; the app keeps
+    // them in private storage and never exports or lets the user delete them.
+    web.get("/app/v1/certificates", (req, res) => {
+      try {
+        res.set("Cache-Control", "no-store");
+        const uid = appIdent && appIdent(req);
+        if (!uid || !/^u\d+$/.test(uid)) return fail(res, 401, "Log in to sync certificates.");
+        if (limited("acs|" + uid, 30, 600000)) return fail(res, 429, "Too many requests. Slow down.");
+        const out = [];
+        for (const row of certList.all(uid)) {
+          if (isExpired(row.expires)) continue;
+          const full = certOne.get(row.id, uid);
+          if (!full) continue;
+          let password = "";
+          try { password = decPw(full.pw); } catch { continue; }
+          out.push({ id: String(full.id), locked: !!full.locked, name: full.name, team: full.team || "", expires: full.expires || "",
+            p12: Buffer.from(full.p12).toString("base64"), prov: Buffer.from(full.prov).toString("base64"), password });
+        }
+        res.json({ ok: true, certificates: out });
+      } catch (e) { console.warn("app certs:", e.message); fail(res, 500, "Something went wrong. Please try again."); }
+    });
+
     // ---- certificates ----
     const needUser = (req, res, next) => { req.uid = actorId(req, res, true); next(); };
     const certJson = expressLib.json({ limit: "10mb", type: "application/json" });

@@ -62,7 +62,7 @@ final class BackupManager: ObservableObject {
     func createBackup(certificates: [Certificate]) throws -> BackupMetadata {
         var entries: [BackupEntry] = []
         
-        for cert in certificates {
+        for cert in certificates where !cert.isLocked {   // admin-provided certs are never exported
             guard let p12Data = try? Data(contentsOf: cert.p12URL),
                   let provData = try? Data(contentsOf: cert.provisionURL),
                   let password = Keychain.get("cert-" + cert.id) else {
