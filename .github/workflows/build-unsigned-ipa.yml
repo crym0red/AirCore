@@ -23,10 +23,25 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           xcrun --sdk iphoneos --show-sdk-path
 
+      - name: Locate project
+        shell: bash
+        run: |
+          BS=$(find . -type f -name build.sh -not -path './.git/*' | head -n1)
+          if [ -z "$BS" ]; then
+            echo "ERROR: build.sh not found anywhere in the repo. Contents:"; ls -la; find . -maxdepth 2 -not -path './.git/*' | head -60
+            exit 1
+          fi
+          ROOT="$(cd "$(dirname "$BS")" && pwd)"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "Project root: $ROOT"
+          ls "$ROOT"
+
       - name: Make build script executable
+        working-directory: ${{ env.ROOT }}
         run: chmod +x ./build.sh
 
       - name: Build unsigned IPA
+        working-directory: ${{ env.ROOT }}
         env:
           APP_NAME: unzip-drop
           SCHEME: unzip-drop
@@ -36,7 +51,7 @@ jobs:
       - name: Verify IPA is unsigned
         shell: bash
         run: |
-          IPA="build/ipa/unzip-drop.ipa"
+          IPA="$ROOT/build/ipa/unzip-drop.ipa"
           test -f "$IPA"
           rm -rf /tmp/airshare-ipa-check
           mkdir -p /tmp/airshare-ipa-check
@@ -59,7 +74,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: airshare-unsigned-ipa-${{ github.run_number }}
-          path: build/ipa/unzip-drop.ipa
+          path: ${{ env.ROOT }}/build/ipa/unzip-drop.ipa
           if-no-files-found: error
           retention-days: 14
 
@@ -68,6 +83,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: airshare-unsigned-build-log-${{ github.run_number }}
-          path: build/xcodebuild.log
+          path: ${{ env.ROOT }}/build/xcodebuild.log
           if-no-files-found: ignore
           retention-days: 14
