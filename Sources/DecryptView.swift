@@ -291,7 +291,7 @@ struct DecryptView: View {
     @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @ObservedObject private var c = DecryptClient.shared
     @State private var query = ""
-    @State private var showVersions = false
+    @State private var versionsOpen = false
     @State private var showSearch = false
     @FocusState private var searchFocused: Bool
 
@@ -344,7 +344,6 @@ struct DecryptView: View {
             await c.search(query)
         }
         .task { await c.loadHistory() }
-        .sheet(isPresented: $showVersions) { versionsSheet }
     }
 
     private func openSearch() {
@@ -409,7 +408,7 @@ struct DecryptView: View {
         Card {
             VStack(spacing: 0) {
                 ForEach(Array(c.results.enumerated()), id: \.element.id) { idx, app in
-                    Button { c.select(app); query = ""; closeSearch() } label: {
+                    Button { c.select(app); query = ""; closeSearch(); versionsOpen = false } label: {
                         appRow(icon: app.icon, title: app.name, subtitle: [app.dev, app.version.isEmpty ? "" : "v\(app.version)"].filter { !$0.isEmpty }.joined(separator: " · "), trailing: "chevron.right")
                     }
                     .buttonStyle(.plain)
@@ -430,7 +429,7 @@ struct DecryptView: View {
                         if !app.dev.isEmpty { Text(app.dev).font(.system(size: 12)).foregroundStyle(Theme.subtle).lineLimit(1) }
                     }
                     Spacer(minLength: 0)
-                    Button { c.clearSelection() } label: {
+                    Button { c.clearSelection(); versionsOpen = false } label: {
                         Image(systemName: "xmark.circle.fill").font(.system(size: 20)).foregroundStyle(Theme.subtle)
                     }
                     .buttonStyle(.plain).disabled(c.busy)
@@ -446,15 +445,66 @@ struct DecryptView: View {
                     }
                     .buttonStyle(.plain).disabled(c.busy).opacity(c.busy ? 0.5 : 1)
                     Button {
-                        showVersions = true
-                        Task { await c.loadVersions(page: 1) }
+                        withAnimation(.easeInOut(duration: 0.2)) { versionsOpen.toggle() }
+                        if versionsOpen { Task { await c.loadVersions(page: 1) } }
                     } label: {
-                        Label("Versions", systemImage: "clock.arrow.circlepath")
+                        Label("Versions", systemImage: versionsOpen ? "chevron.up" : "clock.arrow.circlepath")
                             .font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.accent)
                             .frame(maxWidth: .infinity).frame(height: 42)
                             .background(Theme.accent.opacity(0.14)).clipShape(Capsule())
                     }
                     .buttonStyle(.plain).disabled(c.busy).opacity(c.busy ? 0.5 : 1)
+                }
+
+                if versionsOpen { versionsInline(app) }
+            }
+        }
+    }
+
+    /// Versions shown right under the app, in the same card — not a popup. Each row carries the app icon.
+    @ViewBuilder
+    private func versionsInline(_ app: DecryptApp) -> some View {
+        VStack(spacing: 0) {
+            Divider().overlay(Theme.stroke).padding(.top, 4)
+            if c.loadingVersions && c.versions.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView().tint(Theme.accent)
+                    Text("Asking the decrypt bot for versions…").font(.caption).foregroundStyle(Theme.subtle)
+                }
+                .padding(.vertical, 16)
+            } else if let err = c.error, c.versions.isEmpty {
+                Text(err).font(.caption).foregroundStyle(.orange).padding(.vertical, 14)
+            } else {
+                ForEach(Array(c.versions.enumerated()), id: \.element.id) { idx, v in
+                    Button {
+                        c.start(url: app.url, version: v.v, display: app.name)
+                        withAnimation(.easeInOut(duration: 0.2)) { versionsOpen = false }
+                    } label: {
+                        HStack(spacing: 12) {
+                            iconView(app.icon, size: 34)
+                            Text("v\(v.v)").font(.system(size: 15, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
+                            if v.current {
+                                Text("CURRENT").font(.system(size: 9, weight: .heavy, design: .monospaced)).foregroundStyle(Theme.accent)
+                                    .padding(.horizontal, 6).padding(.vertical, 2).background(Theme.accent.opacity(0.16)).clipShape(Capsule())
+                            }
+                            Spacer()
+                            Image(systemName: "lock.open.fill").font(.system(size: 13)).foregroundStyle(Theme.accent)
+                        }
+                        .padding(.vertical, 10).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).disabled(c.busy)
+                    if idx < c.versions.count - 1 { Divider().overlay(Theme.stroke).padding(.leading, 46) }
+                }
+                if c.versionPages > 1 {
+                    HStack(spacing: 16) {
+                        Button { Task { await c.loadVersions(page: c.versionPage - 1) } } label: { Image(systemName: "chevron.left") }
+                            .disabled(c.versionPage <= 1 || c.loadingVersions)
+                        Text("Page \(c.versionPage) / \(c.versionPages)").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.subtle)
+                        Button { Task { await c.loadVersions(page: c.versionPage + 1) } } label: { Image(systemName: "chevron.right") }
+                            .disabled(c.versionPage >= c.versionPages || c.loadingVersions)
+                        if c.loadingVersions { ProgressView().tint(Theme.accent).scaleEffect(0.8) }
+                    }
+                    .foregroundStyle(Theme.accent).padding(.vertical, 12)
                 }
             }
         }
@@ -551,61 +601,6 @@ struct DecryptView: View {
     }
 
     // MARK: Versions sheet
-
-    private var versionsSheet: some View {
-        NavigationStack {
-            ZStack {
-                Theme.bg.ignoresSafeArea()
-                ScrollView {
-                    VStack(spacing: 0) {
-                        if c.loadingVersions && c.versions.isEmpty {
-                            VStack(spacing: 10) {
-                                ProgressView().tint(Theme.accent)
-                                Text("Asking the decrypt bot for versions…").font(.caption).foregroundStyle(Theme.subtle)
-                            }.padding(.top, 60)
-                        } else if let err = c.error, c.versions.isEmpty {
-                            Text(err).font(.caption).foregroundStyle(.orange).padding(20)
-                        } else {
-                            ForEach(Array(c.versions.enumerated()), id: \.element.id) { idx, v in
-                                Button {
-                                    showVersions = false
-                                    if let app = c.selected { c.start(url: app.url, version: v.v, display: app.name) }
-                                } label: {
-                                    HStack {
-                                        Text("v\(v.v)").font(.system(size: 16, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
-                                        if v.current {
-                                            Text("CURRENT").font(.system(size: 9, weight: .heavy, design: .monospaced)).foregroundStyle(Theme.accent)
-                                                .padding(.horizontal, 6).padding(.vertical, 2).background(Theme.accent.opacity(0.16)).clipShape(Capsule())
-                                        }
-                                        Spacer()
-                                        Image(systemName: "lock.open.fill").foregroundStyle(Theme.accent)
-                                    }
-                                    .padding(.horizontal, 16).padding(.vertical, 13).contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                if idx < c.versions.count - 1 { Divider().overlay(Theme.stroke).padding(.leading, 16) }
-                            }
-                            if c.versionPages > 1 {
-                                HStack(spacing: 18) {
-                                    Button { Task { await c.loadVersions(page: c.versionPage - 1) } } label: { Image(systemName: "chevron.left") }
-                                        .disabled(c.versionPage <= 1 || c.loadingVersions)
-                                    Text("Page \(c.versionPage) / \(c.versionPages)").font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.subtle)
-                                    Button { Task { await c.loadVersions(page: c.versionPage + 1) } } label: { Image(systemName: "chevron.right") }
-                                        .disabled(c.versionPage >= c.versionPages || c.loadingVersions)
-                                    if c.loadingVersions { ProgressView().tint(Theme.accent) }
-                                }
-                                .foregroundStyle(Theme.accent).padding(.vertical, 18)
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle(c.selected?.name ?? "Versions")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showVersions = false } } }
-        }
-        .preferredColorScheme(AppTheme.shared.colorScheme)
-    }
 
     // MARK: Pieces
 

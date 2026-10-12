@@ -267,14 +267,6 @@ struct SigningSheet: View {
                 }
             }
             Spacer(minLength: 0)
-            Button { showBulkSigning = true } label: {
-                Image(systemName: "square.stack.3d.up.fill")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 34, height: 34)
-                    .background(accent.opacity(0.22))
-                    .clipShape(Circle())
-            }
             titleBarButton("xmark")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
@@ -356,6 +348,11 @@ struct SigningSheet: View {
                 Divider().overlay(Theme.stroke).padding(.leading, 39)
                 bundleRow("Real Binary Analysis", "waveform.path.ecg", "Open") {
                     developerToolMode = .analysis
+                    showDeveloperTool = true
+                }
+                Divider().overlay(Theme.stroke).padding(.leading, 39)
+                bundleRow("CFG Viewer", "point.3.connected.trianglepath.dotted", "Capstone") {
+                    developerToolMode = .cfgViewer
                     showDeveloperTool = true
                 }
                 Divider().overlay(Theme.stroke).padding(.leading, 39)
@@ -1345,7 +1342,7 @@ struct BundleInfoEditorSheet: View {
 }
 
 struct DeveloperToolSheet: View {
-    enum Mode { case strings, patchFunctions, dependencies, disassemble, analysis, injectData }
+    enum Mode { case strings, patchFunctions, dependencies, disassemble, analysis, injectData, cfgViewer }
 
     let mode: Mode
     let ipaURL: URL
@@ -1397,6 +1394,7 @@ struct DeveloperToolSheet: View {
                 case .disassemble:    disassembleView
                 case .analysis:       BinaryAnalysisView(ipaURL: ipaURL)
                 case .injectData:     injectDataView
+                case .cfgViewer:      cfgDirectView
                 }
             }
             .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
@@ -1404,7 +1402,9 @@ struct DeveloperToolSheet: View {
             .modifier(StringSearchable(mode: mode, text: $query))
         }
         .preferredColorScheme(.dark)
-        .task { await runScan() }
+        .task {
+            if mode == .cfgViewer { await openLocalCFG() } else { await runScan() }
+        }
         .sheet(item: $editHit) { hit in
             StringEditSheet(hit: hit, blue: blue) { patch in
                 patches.removeAll { $0.fileOffset == patch.fileOffset }
@@ -1453,6 +1453,22 @@ struct DeveloperToolSheet: View {
         case .disassemble: return "Disassemble ARM64"
         case .analysis: return "Real Binary Analysis"
         case .injectData: return "Inject Data"
+        case .cfgViewer: return "CFG Viewer"
+        }
+    }
+
+    // MARK: CFG Viewer (direct — Capstone + UCDisassembler, no extra UI around it)
+
+    @ViewBuilder
+    private var cfgDirectView: some View {
+        if let cfgFunction {
+            CFGViewerController(function: cfgFunction).ignoresSafeArea()
+        } else {
+            VStack(spacing: 10) {
+                ProgressView().tint(blue)
+                Text(cfgStatus ?? "Loading ARM64 text with Capstone…").font(.caption).foregroundStyle(Theme.subtle)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)
         }
     }
 
