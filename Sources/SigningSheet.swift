@@ -1410,6 +1410,8 @@ struct DeveloperToolSheet: View {
     @State private var showCFGFind = false
     @State private var cfgFindQuery = ""
     @State private var showFunctionList = false
+    @State private var functionListLoadProgress: Double = 0
+    @State private var manifestLoadProgress: Double = 0
     /// The CFG floating toolbar starts collapsed to a single button — none of
     /// its actions (Functions included) are reachable until this is tapped.
     @State private var cfgToolbarExpanded = false
@@ -1651,14 +1653,19 @@ struct DeveloperToolSheet: View {
             } else {
                 ZStack(alignment: .topTrailing) {
                     VStack(spacing: 10) {
-                        Image(systemName: "function").font(.largeTitle).foregroundStyle(Theme.subtle)
-                        Text("Pick a function to build its CFG").font(.subheadline).foregroundStyle(Theme.text)
-                        if functionIndexState == .loading {
-                            ProgressView().tint(blue).padding(.top, 4)
-                        } else {
-                            Button("Browse Functions") { showFunctionList = true }
-                                .buttonStyle(.bordered).tint(blue).padding(.top, 4)
-                        }
+                        // This only shows while the auto-load is still in flight (or
+                        // if it genuinely failed) — it's not asking you to pick
+                        // anything. The old copy here ("Pick a function to build its
+                        // CFG") was left over from before CFG auto-loaded and made it
+                        // look like a function picker even though nothing here opens
+                        // one anymore.
+                        AirShareWatermark(size: 96)
+                        ProgressView(value: functionListLoadProgress).tint(blue).frame(width: 180)
+                        Text(cfgStatus?.isEmpty == false ? cfgStatus! : "Loading control flow graph…")
+                            .font(.subheadline).foregroundStyle(Theme.text)
+                            .multilineTextAlignment(.center).padding(.horizontal, 24)
+                        Button("Browse Functions Instead") { showFunctionList = true }
+                            .buttonStyle(.bordered).tint(blue).padding(.top, 4)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)
 
@@ -1896,22 +1903,28 @@ struct DeveloperToolSheet: View {
     /// LC_SYMTAB gives real names wherever the binary wasn't stripped of them.
     private func loadFunctionIndex() async {
         functionIndexState = .loading
+        functionListLoadProgress = 0.1
         guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil) else {
             functionIndexState = .empty
             return
         }
+        functionListLoadProgress = 0.35
         let starts = MachOTools.functionStarts(in: ctx.thin).sorted()
         guard !starts.isEmpty else {
             functionIndexState = .empty
             return
         }
+        functionListLoadProgress = 0.55
         let symbols = MachOTools.symbolMap(in: ctx.thin)
         symbolTable = symbols   // cached for class-name resolution (see `references(for:...)`) — not just function names
+        functionListLoadProgress = 0.7
         importMap = MachOTools.importStubMap(in: ctx.thin)   // real stub/symbol-pointer → imported-API-name map (see `calleesOf`)
+        functionListLoadProgress = 0.85
         objcClassList = MachOTools.objcClasses(in: ctx.thin, segments: ctx.segments, sections: ctx.sections)   // real __objc_classlist walk — works even when LC_SYMTAB is stripped
         functionIndex = starts.map { addr in
             (address: addr, name: Self.displayName(forSymbol: symbols[addr], fallback: String(format: "sub_%llx", addr)))
         }
+        functionListLoadProgress = 1.0
         functionIndexState = .ready
     }
 
@@ -2539,10 +2552,12 @@ struct DeveloperToolSheet: View {
 
     private func loadManifest() async {
         manifestState = .loading
+        manifestLoadProgress = 0.12
         guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil) else {
             manifestState = .empty
             return
         }
+        manifestLoadProgress = 0.55
         entitlements = MachOTools.entitlementsPlist(in: ctx.thin) ?? [:]
         if let plistData = await LocalBinaryScanner.bundleFile(named: "Info.plist", ipaURL: ipaURL),
            let plist = (try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil)) as? [String: Any] {
@@ -2550,6 +2565,7 @@ struct DeveloperToolSheet: View {
         } else {
             infoPlist = [:]
         }
+        manifestLoadProgress = 1.0
         manifestState = (infoPlist.isEmpty && entitlements.isEmpty) ? .empty : .ready
     }
 
@@ -2602,7 +2618,7 @@ struct DeveloperToolSheet: View {
                     VStack(spacing: 18) {
                         AirShareWatermark(size: 96)
                         VStack(spacing: 10) {
-                            ProgressView().tint(blue)
+                            ProgressView(value: manifestLoadProgress).tint(blue).frame(width: 180)
                             Text("Reading Info.plist + LC_CODE_SIGNATURE entitlements…").font(.caption).foregroundStyle(Theme.subtle)
                         }
                     }
@@ -2680,7 +2696,7 @@ struct DeveloperToolSheet: View {
                     VStack(spacing: 18) {
                         AirShareWatermark(size: 96)
                         VStack(spacing: 10) {
-                            ProgressView().tint(blue)
+                            ProgressView(value: functionListLoadProgress).tint(blue).frame(width: 180)
                             Text("Reading LC_FUNCTION_STARTS + LC_SYMTAB…").font(.caption).foregroundStyle(Theme.subtle)
                         }
                     }
@@ -2818,9 +2834,12 @@ struct DeveloperToolSheet: View {
         NavigationStack {
             Group {
                 if functionIndexState == .idle || functionIndexState == .loading {
-                    VStack(spacing: 10) {
-                        ProgressView().tint(blue)
-                        Text("Reading __objc_classlist + LC_FUNCTION_STARTS + LC_SYMTAB…").font(.caption).foregroundStyle(Theme.subtle)
+                    VStack(spacing: 18) {
+                        AirShareWatermark(size: 96)
+                        VStack(spacing: 10) {
+                            ProgressView(value: functionListLoadProgress).tint(blue).frame(width: 180)
+                            Text("Reading __objc_classlist + LC_FUNCTION_STARTS + LC_SYMTAB…").font(.caption).foregroundStyle(Theme.subtle)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if objcMethods.isEmpty {
@@ -3604,9 +3623,12 @@ struct DeveloperToolSheet: View {
                     }
                     .scrollContentBackground(.hidden).background(Color.black)
                 } else {
-                    VStack(spacing: 8) {
-                        ProgressView().tint(blue)
-                        Text("Building call graph…").font(.caption).foregroundStyle(Theme.subtle)
+                    VStack(spacing: 18) {
+                        AirShareWatermark(size: 96)
+                        VStack(spacing: 10) {
+                            ProgressView(value: 0.5).tint(blue).frame(width: 180)
+                            Text("Building call graph…").font(.caption).foregroundStyle(Theme.subtle)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color.black)
