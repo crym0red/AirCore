@@ -76,6 +76,7 @@ struct SigningSheet: View {
     @State private var entitlementTypeHints: [String: String] = [:]
     @State private var plistSetValues: [String: String] = [:]
     @State private var showDeveloperTool = false
+    @State private var showProtectionAnalysis = false
     @State private var developerToolMode: DeveloperToolSheet.Mode = .strings
     @State private var developerStrings: [DeveloperStringEntry] = []
     @State private var binaryPatches: [BinaryPatch] = []
@@ -382,6 +383,10 @@ struct SigningSheet: View {
                 bundleRow("Real Binary Analysis", "waveform.path.ecg", "Open") {
                     developerToolMode = .analysis
                     showDeveloperTool = true
+                }
+                Divider().overlay(Theme.stroke).padding(.leading, 39)
+                bundleRow("Protection Analysis", "shield.lefthalf.filled", "Scan") {
+                    showProtectionAnalysis = true
                 }
                 Divider().overlay(Theme.stroke).padding(.leading, 39)
                 bundleRow("CFG Viewer", "point.3.connected.trianglepath.dotted", "Capstone") {
@@ -823,12 +828,14 @@ struct SigningSheet: View {
                     VStack(spacing: 6) {
                         Image(systemName: "plus").font(.system(size: 19.5, weight: .bold)).foregroundStyle(Theme.subtle)
                         Text("Add library (.dylib, .framework)").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                        Text("Tap to browse").font(.system(size: 9)).foregroundStyle(Theme.subtle)
+                        Text("Includes GitHub Actions-built dylibs").font(.system(size: 9)).foregroundStyle(Theme.subtle)
                     }
                     .frame(maxWidth: .infinity).padding(.vertical, 19.5)
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.stroke, style: StrokeStyle(lineWidth: 1, dash: [6])))
                 }
                 .buttonStyle(.plain)
+                Text("Workflow: export the generated template ZIP → push its files to your GitHub repository → download GeneratedSwizzle-ios-arm64 from Actions → return here and add the .dylib. AirCore stages it for this signing session; it does not download artifacts from GitHub automatically.")
+                    .font(.system(size: 9)).foregroundStyle(Theme.subtle).fixedSize(horizontal: false, vertical: true)
             }
             .padding(12).background(Color(white: 0.08)).clipShape(RoundedRectangle(cornerRadius: 13.5))
         }
@@ -1439,6 +1446,7 @@ struct DeveloperToolSheet: View {
     @State private var importMap: [UInt64: String] = [:]
     @State private var objcClassList: [MachOTools.ObjCClassInfo] = []
     @State private var showObjCBrowser = false
+    @State private var showAIHookCatalog = false
     @State private var objcBrowserQuery = ""
     @State private var selectedTweakMethods: Set<UInt64> = []
     @State private var showStringIndex = false
@@ -1704,7 +1712,9 @@ struct DeveloperToolSheet: View {
         .sheet(isPresented: $showStringSearchTool) { stringSearchToolSheet }
         .sheet(isPresented: $showCallGraph) { callGraphSheet }
         .sheet(isPresented: $showObjCBrowser) { objcBrowserSheet }
+        .sheet(isPresented: $showAIHookCatalog) { AIHookCatalogView() }
         .sheet(isPresented: $showGateFinder) { gateFinderSheet }
+        .sheet(isPresented: $showProtectionAnalysis) { ProtectionAnalysisSheet(ipaURL: ipaURL) }
         .sheet(item: $batchPatchPreview) { b in batchPatchPreviewSheet(b) }
         .sheet(isPresented: $showManifest) { manifestSheet }
     }
@@ -2901,6 +2911,10 @@ struct DeveloperToolSheet: View {
                 } else {
                     List {
                         Section {
+                            Button { showAIHookCatalog = true } label: {
+                                Label("AI Hook Catalog · Scan TXT / Markdown", systemImage: "brain.head.profile")
+                            }
+                            .font(.caption.weight(.semibold)).buttonStyle(.borderedProminent).tint(blue)
                             Button { exportClassHeaders() } label: {
                                 Label("Export all class headers (.h)", systemImage: "doc.text")
                             }
@@ -3316,19 +3330,61 @@ struct DeveloperToolSheet: View {
           real load-command entry and re-signs the app so the OS permits
           loading an extra, non-Apple dylib into it. Skipping that step means
           this constructor never runs, no matter how correct the code is.
-        - Build with `make` (adjust `ARCH`/`IOS_MIN` first) via your existing
-          GitHub Actions pipeline, then drop the resulting
-          `GeneratedSwizzle.dylib` into the dylib injection picker.
+        - **GitHub Actions build**: the included `.github/workflows/build-dylib.yml`
+          builds an arm64 iOS dylib and uploads it as `GeneratedSwizzle-ios-arm64`.
+          Put these files in a GitHub repository, push to `main`/`master`, or run
+          the workflow manually. Download the artifact from Actions.
+        - **AirCore signing sheet**: use `Signing Sheet → Dylib Injection → Add
+          library (.dylib, .framework)` and select the downloaded artifact's
+          `GeneratedSwizzle.dylib`. AirCore then stages it in the existing
+          injection list for your own test app.
         """
         do {
             let tmpDir = FileManager.default.temporaryDirectory
             let zipURL = tmpDir.appendingPathComponent("GeneratedSwizzleDylib.zip")
             try? FileManager.default.removeItem(at: zipURL)
             let archive = try Archive(url: zipURL, accessMode: .create)
+            let workflow = """
+            name: Build Generated Diagnostic Dylib
+
+            on:
+              workflow_dispatch:
+              push:
+                branches: [ main, master ]
+
+            permissions:
+              contents: read
+
+            jobs:
+              build-dylib:
+                runs-on: macos-15
+                timeout-minutes: 15
+                steps:
+                  - uses: actions/checkout@v4
+                  - name: Build iOS arm64 dylib
+                    shell: bash
+                    run: |
+                      set -euo pipefail
+                      SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+                      clang -dynamiclib -arch arm64 -isysroot "$SDK" \
+                        -miphoneos-version-min=14.0 \
+                        -framework Foundation -framework UIKit \
+                        -install_name @rpath/GeneratedSwizzle.dylib \
+                        -o GeneratedSwizzle.dylib GeneratedSwizzle.m
+                      file GeneratedSwizzle.dylib
+                      xcrun --sdk iphoneos --find clang >/dev/null
+                  - name: Upload dylib artifact
+                    uses: actions/upload-artifact@v4
+                    with:
+                      name: GeneratedSwizzle-ios-arm64
+                      path: GeneratedSwizzle.dylib
+                      if-no-files-found: error
+            """
             let files: [(String, Data)] = [
                 ("GeneratedSwizzle.m", Data(source.utf8)),
                 ("Makefile", Data(makefile.utf8)),
                 ("README.md", Data(readme.utf8)),
+                (".github/workflows/build-dylib.yml", Data(workflow.utf8)),
             ]
             for (path, data) in files {
                 try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) { position, size in
