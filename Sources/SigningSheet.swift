@@ -1407,6 +1407,11 @@ struct DeveloperToolSheet: View {
     @State private var patchPreview: PatchPreview?
     @State private var showCallGraph = false
     @State private var callGraphRoot: CallGraphNode?
+    @State private var showGateFinder = false
+    @State private var gateFinderState: FunctionIndexState = .idle
+    @State private var gateFinderProgress: Double = 0
+    @State private var gateCandidates: [GateCandidate] = []
+    @State private var batchPatchPreview: BatchPatchPreview?
     enum FunctionIndexState: Equatable { case idle, loading, ready, empty }
 
     /// What kind of edge a call-graph node was reached by — drives both its
@@ -1453,6 +1458,35 @@ struct DeveloperToolSheet: View {
         let originalText: String
         let newBytes: [UInt8]
         let newText: String
+    }
+
+    /// Several `PatchPreview`s reviewed and queued together — e.g. every real
+    /// caller of a function, NOP'd in one pass. Still one preview per site
+    /// with its own real original/replacement bytes; this is just the
+    /// confirm-all wrapper around the same single-patch flow.
+    struct BatchPatchPreview: Identifiable {
+        let id = UUID()
+        let title: String
+        let items: [PatchPreview]
+    }
+
+    /// A structural, instruction-level pattern found by `buildGateCandidates`:
+    /// a value loaded from a real global address (via the same adrp+ldr pair
+    /// `references(for:...)` already decodes) immediately tested by a
+    /// conditional branch. This is reported as exactly what it is — a shape
+    /// in the real decoded instructions — never as a claim about what the
+    /// global or branch actually mean. Flagging it as a candidate, not a
+    /// verdict, is the whole point: a human still has to look at it.
+    struct GateCandidate: Identifiable {
+        let id = UUID()
+        let functionAddress: UInt64
+        let functionName: String
+        let loadAddress: UInt64
+        let loadText: String
+        let branchAddress: UInt64
+        let branchText: String
+        let globalVA: UInt64
+        let globalLabel: String   // a resolved string at that address, or just its hex VA
     }
 
     private var blue: Color { Theme.accent }
@@ -1602,6 +1636,8 @@ struct DeveloperToolSheet: View {
         .sheet(isPresented: $showStringIndex) { stringIndexSheet }
         .sheet(isPresented: $showCallGraph) { callGraphSheet }
         .sheet(isPresented: $showObjCBrowser) { objcBrowserSheet }
+        .sheet(isPresented: $showGateFinder) { gateFinderSheet }
+        .sheet(item: $batchPatchPreview) { b in batchPatchPreviewSheet(b) }
     }
 
     /// Bottom-floating pill over the CFG graph: switch tools without leaving the
@@ -1656,6 +1692,13 @@ struct DeveloperToolSheet: View {
                 if stringIndexState == .idle { Task { await buildStringIndex() } }
             } label: {
                 cfgToolbarIcon("text.magnifyingglass")
+            }
+
+            Button {
+                showGateFinder = true
+                if gateFinderState == .idle { Task { await buildGateCandidates() } }
+            } label: {
+                cfgToolbarIcon("flag.badge.ellipsis")
             }
 
             Button { dismiss() } label: {
@@ -1787,9 +1830,25 @@ struct DeveloperToolSheet: View {
         symbolTable = symbols   // cached for class-name resolution (see `references(for:...)`) — not just function names
         importMap = MachOTools.importStubMap(in: ctx.thin)   // real stub/symbol-pointer → imported-API-name map (see `calleesOf`)
         functionIndex = starts.map { addr in
-            (address: addr, name: symbols[addr] ?? String(format: "sub_%llx", addr))
+            (address: addr, name: Self.displayName(forSymbol: symbols[addr], fallback: String(format: "sub_%llx", addr)))
         }
         functionIndexState = .ready
+    }
+
+    /// A real LC_SYMTAB symbol, labeled honestly rather than left looking like
+    /// readable text when it isn't. Swift's name mangling produces names like
+    /// `$s4Core...` that are technically real symbols but unreadable without a
+    /// full demangler (which needs the Swift runtime/toolchain — not available
+    /// here). Rather than either showing raw mangled noise with no context or
+    /// pretending to demangle it, this just flags it plainly as Swift so
+    /// nobody mistakes `$s4Core...` for a meaningless/corrupt name.
+    nonisolated private static func displayName(forSymbol symbol: String?, fallback: String) -> String {
+        guard let symbol, !symbol.isEmpty else { return fallback }
+        let swiftPrefixes = ["_$s", "$s", "_$S", "$S", "_T0", "$T0"]
+        if swiftPrefixes.contains(where: symbol.hasPrefix) {
+            return "Swift: \(symbol)"
+        }
+        return symbol
     }
 
     /// Which real function (per LC_FUNCTION_STARTS) an address falls inside, and
@@ -1814,14 +1873,14 @@ struct DeveloperToolSheet: View {
     /// signed, word-scaled 26-bit branch immediate directly from the raw machine
     /// code. Not inferred from any single function's Capstone window — every hit
     /// here is an actual `bl` encoded in the binary that resolves to this address.
-    /// Real callers of `target` — found by scanning __TEXT,__text for ARM64 `BL`
-    /// instructions (opcode bits [31:26] == 0b100101) and decoding each one's
-    /// signed, word-scaled 26-bit branch immediate directly from the raw machine
-    /// code. Not inferred from any single function's Capstone window — every hit
-    /// here is an actual `bl` encoded in the binary that resolves to this address.
-    /// Pulled out as a pure function (no state writes) so both the Function Info
-    /// screen and the per-node Call Graph lookups can share it.
-    private func scanCallers(of target: UInt64) async -> [(address: UInt64, name: String, count: Int)] {
+    /// Every real `bl` instruction's own address in __TEXT,__text whose
+    /// signed, word-scaled 26-bit branch immediate resolves to `target` —
+    /// decoded directly from the raw machine code (opcode bits [31:26] ==
+    /// 0b100101). These are exact call-SITE addresses, not the functions
+    /// they sit inside — needed as-is for batch-patching every real caller,
+    /// and aggregated by containing function for the Function Info /
+    /// Call Graph "called from" views (see `scanCallers`).
+    private func scanCallerSites(of target: UInt64) async -> [UInt64] {
         guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil),
               let text = MachOTools.textSection(ctx.sections, in: ctx.thin) else { return [] }
         let data = text.data
@@ -1841,6 +1900,15 @@ struct DeveloperToolSheet: View {
                 hitAddrs.append(instrAddr)
             }
         }
+        return hitAddrs.sorted()
+    }
+
+    /// Real callers of `target`, grouped by the real function each call site
+    /// sits inside (see `scanCallerSites` for the exact per-site addresses).
+    /// Pulled out as a pure function (no state writes) so both the Function
+    /// Info screen and the per-node Call Graph lookups can share it.
+    private func scanCallers(of target: UInt64) async -> [(address: UInt64, name: String, count: Int)] {
+        let hitAddrs = await scanCallerSites(of: target)
         var byFunction: [UInt64: (name: String, count: Int)] = [:]
         for addr in hitAddrs {
             guard let b = functionBounds(containing: addr) else { continue }
@@ -2010,6 +2078,39 @@ struct DeveloperToolSheet: View {
         return out
     }
 
+    /// Every `adrp`+`ldr` pair that loads an actual VALUE from a global
+    /// address into a register (as opposed to `adrp`+`add`, which just
+    /// computes an address) — returning the instruction index of that load,
+    /// which register now holds the loaded value, and the real global
+    /// address it was loaded from. Pure instruction-stream analysis, same
+    /// lookahead window as `adrpTargets`; used by `buildGateCandidates` to
+    /// find a load immediately followed by a test of that same register.
+    nonisolated private static func globalLoadTargets(in instrs: [UCDisasmInstruction]) -> [(loadIndex: Int, reg: String, globalVA: UInt64)] {
+        var out: [(Int, String, UInt64)] = []
+        for i in 0..<instrs.count {
+            let insn = instrs[i]
+            guard insn.mnemonic.lowercased() == "adrp",
+                  insn.operandList.count >= 2,
+                  insn.operandList[0].type == .register,
+                  insn.operandList[1].type == .immediate else { continue }
+            let destReg = insn.operandList[0].registerName
+            let pageBase = (insn.address & ~UInt64(0xFFF)) &+ insn.operandList[1].immediateValue
+            let upper = min(i + 11, instrs.count)
+            for j in (i + 1)..<upper {
+                let next = instrs[j]
+                guard next.mnemonic.lowercased() == "ldr",
+                      next.operandList.count >= 2,
+                      next.operandList[0].type == .register,
+                      next.operandList[1].type == .memory,
+                      next.operandList[1].memoryBaseReg == destReg else { continue }
+                let globalVA = pageBase &+ UInt64(bitPattern: next.operandList[1].memoryOffset)
+                out.append((j, next.operandList[0].registerName, globalVA))
+                break
+            }
+        }
+        return out
+    }
+
     /// Resolves a computed address to real text: tries it directly as a
     /// printable C string first (the common case for literal strings), then
     /// falls back to one pointer dereference through the file (the common
@@ -2113,6 +2214,90 @@ struct DeveloperToolSheet: View {
         stringIndexState = stringIndex.isEmpty ? .empty : .ready
     }
 
+    // MARK: Candidate gate-check finder
+    //
+    // Scans every real function for one specific, mechanical instruction
+    // shape: a value loaded from a global address, tested by a conditional
+    // branch within a few instructions. That shape is common for feature
+    // flags and premium/paywall checks, but it's also just... an if
+    // statement reading a global — this reports the structural match only,
+    // never a claim about what the global or the branch mean. It's a list
+    // of places to go look, not a verdict.
+
+    /// Looks for a conditional test of the exact register a global load just
+    /// filled, within a short window after the load — either a direct
+    /// `cbz`/`cbnz`/`tbz`/`tbnz` on that register, or a `cmp`/`tst` on it
+    /// immediately followed by a conditional branch reading those flags.
+    private func gateCandidatesInFunction(instrs: [UCDisasmInstruction], functionAddress: UInt64, functionName: String, thin: Data, segments: [MachOTools.Segment]) -> [GateCandidate] {
+        var out: [GateCandidate] = []
+        for (loadIndex, reg, globalVA) in Self.globalLoadTargets(in: instrs) {
+            let loadInsn = instrs[loadIndex]
+            let upper = min(loadIndex + 6, instrs.count)
+            var matched = false
+            for k in (loadIndex + 1)..<upper where !matched {
+                let insn = instrs[k]
+                let m = insn.mnemonic.lowercased()
+                let testsReg = insn.operandList.first?.type == .register && insn.operandList.first?.registerName == reg
+                if testsReg, m == "cbz" || m == "cbnz" || m == "tbz" || m == "tbnz" {
+                    out.append(makeGateCandidate(functionAddress: functionAddress, functionName: functionName, load: loadInsn, branch: insn, globalVA: globalVA, thin: thin, segments: segments))
+                    matched = true
+                    break
+                }
+                if testsReg, m == "cmp" || m == "tst" {
+                    let branchUpper = min(k + 3, instrs.count)
+                    for k2 in (k + 1)..<branchUpper where instrs[k2].isConditionalBranch {
+                        out.append(makeGateCandidate(functionAddress: functionAddress, functionName: functionName, load: loadInsn, branch: instrs[k2], globalVA: globalVA, thin: thin, segments: segments))
+                        matched = true
+                        break
+                    }
+                    break   // flags consumed by the first branch after the compare either way
+                }
+                // the loaded value stopped being live once something else wrote to the same register
+                if testsReg { break }
+            }
+        }
+        return out
+    }
+
+    private func makeGateCandidate(functionAddress: UInt64, functionName: String, load: UCDisasmInstruction, branch: UCDisasmInstruction, globalVA: UInt64, thin: Data, segments: [MachOTools.Segment]) -> GateCandidate {
+        let label = resolveReference(at: globalVA, thin: thin, segments: segments).map { "\"\($0)\"" } ?? String(format: "0x%llx", globalVA)
+        return GateCandidate(functionAddress: functionAddress, functionName: functionName, loadAddress: load.address, loadText: load.fullText, branchAddress: branch.address, branchText: branch.fullText, globalVA: globalVA, globalLabel: label)
+    }
+
+    private func buildGateCandidates() async {
+        guard gateFinderState != .loading else { return }
+        gateFinderState = .loading
+        gateFinderProgress = 0
+        if functionIndex.isEmpty { await loadFunctionIndex() }
+        guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil),
+              let text = MachOTools.textSection(ctx.sections, in: ctx.thin),
+              !functionIndex.isEmpty else {
+            gateFinderState = .empty
+            return
+        }
+        var out: [GateCandidate] = []
+        let total = functionIndex.count
+        for (i, fn) in functionIndex.enumerated() {
+            guard fn.address >= text.vmaddr, fn.address < text.vmaddr + UInt64(text.data.count) else { continue }
+            let end = i + 1 < functionIndex.count ? functionIndex[i + 1].address : fn.address + 4096
+            let delta = Int(fn.address - text.vmaddr)
+            let cap = min(Int(end - fn.address), max(0, text.data.count - delta))
+            if cap >= 4 {
+                let window = text.data.subdata(in: delta ..< delta + cap)
+                if let result = UCDisassembler.sharedInstance().disassembleData(window, baseAddress: fn.address) {
+                    out.append(contentsOf: gateCandidatesInFunction(instrs: result.instructions, functionAddress: fn.address, functionName: fn.name, thin: ctx.thin, segments: ctx.segments))
+                }
+            }
+            if i % 20 == 0 {
+                gateFinderProgress = Double(i) / Double(max(total, 1))
+                await Task.yield()
+            }
+        }
+        gateCandidates = out
+        gateFinderProgress = 1
+        gateFinderState = gateCandidates.isEmpty ? .empty : .ready
+    }
+
     private var stringIndexResults: [(address: UInt64, name: String, refs: [String])] {
         let q = stringIndexQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return stringIndex }
@@ -2175,6 +2360,63 @@ struct DeveloperToolSheet: View {
             .background(Color.black)
             .navigationTitle("String Search").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showStringIndex = false } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private var gateFinderSheet: some View {
+        NavigationStack {
+            Group {
+                switch gateFinderState {
+                case .idle, .loading:
+                    VStack(spacing: 10) {
+                        ProgressView(value: gateFinderProgress).tint(blue).frame(width: 180)
+                        Text("Scanning every function for load+test patterns… \(Int(gateFinderProgress * 100))%")
+                            .font(.caption).foregroundStyle(Theme.subtle)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .empty:
+                    VStack(spacing: 8) {
+                        Image(systemName: "flag.slash").font(.largeTitle).foregroundStyle(Theme.subtle)
+                        Text("No global-load-then-branch patterns found.").font(.subheadline).foregroundStyle(Theme.text)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .ready:
+                    List {
+                        Section {
+                            ForEach(gateCandidates) { c in
+                                Button {
+                                    disasmVA = String(format: "0x%llx", c.functionAddress)
+                                    cfgPicked = true
+                                    autoShowInfoOnLoad = true
+                                    cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []; cfgRefClasses = []
+                                    showGateFinder = false
+                                    Task { await openLocalCFG() }
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack {
+                                            Text(c.functionName).font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                                            Spacer()
+                                            Image(systemName: "arrow.forward.circle").foregroundStyle(blue)
+                                        }
+                                        Text("load: \(c.loadText)").font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle).lineLimit(1)
+                                        Text("test: \(c.branchText)").font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle).lineLimit(1)
+                                        Text("global: \(c.globalLabel)").font(.system(size: 11, design: .monospaced)).foregroundStyle(.orange).lineLimit(1)
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("\(gateCandidates.count) candidates")
+                        } footer: {
+                            Text("Heuristic, not a verdict: every row is a real load from a global address immediately tested by a real conditional branch, decoded straight from Capstone. It does not know — and isn't claiming — what that global or branch actually controls. Review the real instructions shown before touching anything.")
+                        }.listRowBackground(Color(white: 0.08))
+                    }
+                    .scrollContentBackground(.hidden).background(Color.black)
+                }
+            }
+            .background(Color.black)
+            .navigationTitle("Candidate Gate Checks").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showGateFinder = false } } }
         }
         .preferredColorScheme(.dark)
     }
@@ -2531,6 +2773,14 @@ struct DeveloperToolSheet: View {
                                 Text(root.name).font(.system(size: 15, weight: .bold, design: .monospaced)).foregroundStyle(Theme.text)
                                 Text(String(format: "0x%llx", root.address)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
                             }
+                            Button {
+                                Task {
+                                    let sites = await scanCallerSites(of: root.address)
+                                    await prepareBatchPatch(callSites: sites, title: "NOP \(sites.count) real caller\(sites.count == 1 ? "" : "s") of \(root.name)")
+                                }
+                            } label: {
+                                Label("Preview: patch all real callers (NOP)", systemImage: "scissors.badge.ellipsis")
+                            }.font(.caption.weight(.semibold)).buttonStyle(.bordered).tint(blue)
                         }.listRowBackground(Color(white: 0.08))
 
                         Section {
@@ -3069,23 +3319,19 @@ struct DeveloperToolSheet: View {
         let origBytes = Array(ctx.thin[off ..< off + 4])
         // NOP = 0x1F2003D5 (little-endian D503201F), RET = 0xC0035FD6.
         let newBytes: [UInt8] = ret ? [0xC0, 0x03, 0x5F, 0xD6] : [0x1F, 0x20, 0x03, 0xD5]
-        let origData = Data(origBytes)
-        let origText: String
-        if let result = UCDisassembler.sharedInstance().disassembleData(origData, baseAddress: va),
-           let first = result.instructions.first {
-            origText = first.fullText
-        } else {
-            origText = "(could not decode — raw bytes shown below)"
-        }
-        let newData = Data(newBytes)
-        let newText: String
-        if let result = UCDisassembler.sharedInstance().disassembleData(newData, baseAddress: va),
-           let first = result.instructions.first {
-            newText = first.fullText
-        } else {
-            newText = ret ? "ret" : "nop"
-        }
+        let origText = decodeInstructionText(origBytes, at: va) ?? "(could not decode — raw bytes shown below)"
+        let newText = decodeInstructionText(newBytes, at: va) ?? (ret ? "ret" : "nop")
         patchPreview = PatchPreview(va: va, fileOffset: off, ret: ret, originalBytes: origBytes, originalText: origText, newBytes: newBytes, newText: newText)
+    }
+
+    /// Fresh single-instruction Capstone decode of a raw 4-byte buffer at a
+    /// given VA — shared by the single and batch patch-preview builders so
+    /// the "original"/"replacement" text shown is always a real decode, not
+    /// a label, in both flows.
+    private func decodeInstructionText(_ bytes: [UInt8], at va: UInt64) -> String? {
+        guard let result = UCDisassembler.sharedInstance().disassembleData(Data(bytes), baseAddress: va),
+              let first = result.instructions.first else { return nil }
+        return first.fullText
     }
 
     /// Actually queues the patch the user just confirmed in the preview sheet
@@ -3101,6 +3347,81 @@ struct DeveloperToolSheet: View {
 
     private func hex(_ bytes: [UInt8]) -> String {
         bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+
+    // MARK: Batch patch preview — e.g. every real caller of a function, reviewed together
+
+    /// Builds one `PatchPreview` per real address in `callSites` — same real
+    /// decode (original bytes + a fresh Capstone pass) as the single-patch
+    /// flow, just gathered into one confirm screen. Only NOPs call sites
+    /// (overwriting the `bl` itself, not the callee) — a real limitation
+    /// worth stating plainly: if the call's result is used afterward (a
+    /// non-void return consumed by later code), NOPing it leaves that
+    /// register's old/garbage value in place, which can misbehave. This
+    /// builds the preview only; nothing is queued until confirmed.
+    private func prepareBatchPatch(callSites: [UInt64], title: String) async {
+        guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil) else {
+            cfgStatus = "Could not open the binary to build patch previews."
+            return
+        }
+        var items: [PatchPreview] = []
+        for va in callSites {
+            guard let off = MachOTools.fileOffset(forVA: va, segments: ctx.segments), off + 4 <= ctx.thin.count else { continue }
+            let origBytes = Array(ctx.thin[off ..< off + 4])
+            let newBytes: [UInt8] = [0x1F, 0x20, 0x03, 0xD5]   // NOP
+            let origText = decodeInstructionText(origBytes, at: va) ?? "(could not decode — raw bytes shown below)"
+            let newText = decodeInstructionText(newBytes, at: va) ?? "nop"
+            items.append(PatchPreview(va: va, fileOffset: off, ret: false, originalBytes: origBytes, originalText: origText, newBytes: newBytes, newText: newText))
+        }
+        guard !items.isEmpty else {
+            cfgStatus = "None of those call sites resolved to a patchable file offset."
+            return
+        }
+        batchPatchPreview = BatchPatchPreview(title: title, items: items)
+    }
+
+    /// Queues every item in a confirmed batch — same single write `commitPatch`
+    /// does, just looped, so every site lands in `patches` individually and
+    /// can still be removed one at a time from the Pending patches list.
+    private func commitBatchPatch(_ b: BatchPatchPreview) {
+        for p in b.items {
+            let label = "\(p.ret ? "RET" : "NOP") @ \(String(format: "0x%llx", p.va))"
+            let patch = BinaryPatch(label: label, fileOffset: p.fileOffset, bytes: p.newBytes, original: p.originalBytes)
+            patches.removeAll { $0.fileOffset == p.fileOffset }
+            patches.append(patch)
+        }
+        batchPatchPreview = nil
+    }
+
+    private func batchPatchPreviewSheet(_ b: BatchPatchPreview) -> some View {
+        NavigationStack {
+            List {
+                Section(b.title) {
+                    ForEach(b.items) { p in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(String(format: "0x%llx", p.va)).font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
+                            Text("was: \(p.originalText)  [\(hex(p.originalBytes))]").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.subtle).lineLimit(1)
+                            Text("new: \(p.newText)  [\(hex(p.newBytes))]").font(.system(size: 10, design: .monospaced)).foregroundStyle(.orange).lineLimit(1)
+                        }
+                    }
+                } footer: {
+                    Text("Each row is the exact real instruction currently at that file offset, and the exact 4 bytes that would overwrite it. NOPing a call site that feeds its return value into later code can misbehave — review before queuing.")
+                }.listRowBackground(Color(white: 0.08))
+
+                Section {
+                    Button(role: .destructive) { batchPatchPreview = nil } label: {
+                        Label("Cancel", systemImage: "xmark")
+                    }
+                    Button { commitBatchPatch(b) } label: {
+                        Label("Queue All \(b.items.count) Patches", systemImage: "checkmark.seal")
+                    }.foregroundStyle(blue)
+                }.listRowBackground(Color(white: 0.08))
+            }
+            .scrollContentBackground(.hidden).background(Color.black)
+            .navigationTitle("Verify Batch Patch").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { batchPatchPreview = nil } } }
+        }
+        .preferredColorScheme(.dark)
     }
 
     private var patchPreviewSheet: some View {
