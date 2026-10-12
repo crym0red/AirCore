@@ -31,7 +31,19 @@ struct SigningSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var certs = CertificateStore.shared
     @ObservedObject private var staff = StaffGate.shared
+    @ObservedObject private var account = ZefvAccount.shared
     @ObservedObject private var ota = OTAInstaller.shared
+
+    /// Dev/ADV tools (CFG viewer, patching, AVX512, etc) are for people who BUILD the
+    /// app's tooling — Admin, Co-Admin, and Developer — not for plain Staff, who monitor
+    /// reports/signings/accounts instead. A server "staff" role alone (StaffGate.isStaff /
+    /// UserRole.developer fallback) no longer qualifies on its own; it takes an actual
+    /// admin/co_admin/dev badge or the admin role.
+    private var canAccessDeveloperTools: Bool {
+        if account.role == .admin || staff.role == .admin { return true }
+        let badges = Set(account.style.badges.map { $0.lowercased() })
+        return badges.contains("admin") || badges.contains("co_admin") || badges.contains("dev")
+    }
 
     // identity
     @State private var name: String
@@ -127,8 +139,8 @@ struct SigningSheet: View {
                     identity                 // App metadata: name / bundle / version
                     buildOptions             // 4 collapsible categories
                     bundleInfoCard           // Entitlements · Info.plist (view)
-                    if staff.isStaff { developerCard }   // dev + ADV tools: staff/admin only
-                    if staff.isStaff {
+                    if canAccessDeveloperTools { developerCard }   // dev + ADV tools: admin / co-admin / dev only
+                    if canAccessDeveloperTools {
                         AVX512ExperimentalSection(
                             ipaURL: ipaURL,
                             appName: name,
@@ -191,7 +203,7 @@ struct SigningSheet: View {
             await analyzeBinary()
             developerStrings = await loadDeveloperStrings()
             avx512DylibURL = AVX512DylibStore.storedURL
-            if staff.isStaff, AVX512AirShareBridge.shared.enabled, let avx512DylibURL {
+            if canAccessDeveloperTools, AVX512AirShareBridge.shared.enabled, let avx512DylibURL {
                 attachAVX512DylibIfNeeded(avx512DylibURL)
             }
         }
@@ -1022,7 +1034,7 @@ struct SigningSheet: View {
     }
 
     private func attachAVX512DylibIfNeeded(_ url: URL) {
-        guard staff.isStaff, AVX512AirShareBridge.shared.enabled else { return }
+        guard canAccessDeveloperTools, AVX512AirShareBridge.shared.enabled else { return }
         let path = url.standardizedFileURL.path
         guard !dylibs.contains(where: { $0.url.standardizedFileURL.path == path }) else { return }
         dylibs.append(DylibItem(url: url, weak: false))
@@ -1043,7 +1055,7 @@ struct SigningSheet: View {
         s.version = version.isEmpty ? nil : version
         s.iconPNG = iconPNG
         s.injectDylibs = dylibs.map { ($0.url, o.weakDylibReferences ? true : $0.weak) }
-        if staff.isStaff, AVX512AirShareBridge.shared.enabled {
+        if canAccessDeveloperTools, AVX512AirShareBridge.shared.enabled {
             s.avx512BridgeManifest = AVX512AirShareBridge.shared.manifestData(bundleID: bundle, appName: name)
         }
         s.injectPath = injectPath; s.injectFolder = injectFolder
@@ -1145,7 +1157,7 @@ struct SigningSheet: View {
             return
         }
         guard let material = try? certs.activeMaterial() else { error = "No active certificate."; return }
-        if staff.isStaff, AVX512AirShareBridge.shared.enabled {
+        if canAccessDeveloperTools, AVX512AirShareBridge.shared.enabled {
             AVX512AirShareBridge.shared.publish(bundleID: bundle, appName: name, ipaURL: ipaURL)
         }
         signing = true; error = nil; result = nil
