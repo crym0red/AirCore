@@ -1392,6 +1392,13 @@ struct DeveloperToolSheet: View {
     @State private var autoShowInfoOnLoad = false
     @State private var cfgCallers: [(address: UInt64, name: String)] = []
     @State private var cfgCallersState: FunctionIndexState = .idle
+    @State private var cfgRefStrings: [String] = []
+    @State private var cfgRefSelectors: [String] = []
+    @State private var showStringIndex = false
+    @State private var stringIndexQuery = ""
+    @State private var stringIndex: [(address: UInt64, name: String, refs: [String])] = []
+    @State private var stringIndexState: FunctionIndexState = .idle
+    @State private var stringIndexProgress: Double = 0
     enum FunctionIndexState: Equatable { case idle, loading, ready, empty }
 
     private var blue: Color { Theme.accent }
@@ -1537,6 +1544,7 @@ struct DeveloperToolSheet: View {
                 .onDisappear { if !cfgPicked { dismiss() } }   // closed without picking anything → nothing to show, close the tool
         }
         .sheet(isPresented: $showFunctionInfo) { functionInfoSheet }
+        .sheet(isPresented: $showStringIndex) { stringIndexSheet }
     }
 
     /// Bottom-floating pill over the CFG graph: switch tools without leaving the
@@ -1573,6 +1581,13 @@ struct DeveloperToolSheet: View {
 
             Button { showCFGFind = true } label: {
                 cfgToolbarIcon("magnifyingglass")
+            }
+
+            Button {
+                showStringIndex = true
+                if stringIndexState == .idle { Task { await buildStringIndex() } }
+            } label: {
+                cfgToolbarIcon("text.magnifyingglass")
             }
 
             Button { dismiss() } label: {
@@ -1663,7 +1678,7 @@ struct DeveloperToolSheet: View {
         disasmVA = "0x\(raw)"
         cfgPicked = true
         autoShowInfoOnLoad = true
-        cfgCallers = []; cfgCallersState = .idle
+        cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []
         showCFGFind = false
         showFunctionList = false
         cfgFunction = nil
@@ -1751,26 +1766,192 @@ struct DeveloperToolSheet: View {
         cfgCallersState = cfgCallers.isEmpty ? .empty : .ready
     }
 
-    /// Plain-text strings/class names Capstone's own annotation pass already
-    /// resolved for this function's `adrp`/`ldr` references (real xrefs, not a
-    /// guess) — gives a human a sense of what the function touches without
-    /// reading ARM64.
-    private var cfgReferencedStrings: [String] {
-        guard let instrs = cfgFunction?.instructions else { return [] }
-        var seen = Set<String>()
-        var out: [String] = []
-        for insn in instrs {
-            guard let c = insn.comment else { continue }
-            var scan = c.startIndex
-            while let open = c[scan...].firstIndex(of: "\""),
-                  let close = c[c.index(after: open)...].firstIndex(of: "\"") {
-                let s = String(c[c.index(after: open)..<close])
-                if !s.isEmpty, seen.insert(s).inserted { out.append(s) }
-                scan = c.index(after: close)
+    // MARK: Static reference resolution (strings + ObjC selectors)
+    //
+    // The disassembler's OWN `findStringReference:`/`findObjcClassRef:` only
+    // resolve when the target binary is actually mapped live into THIS app's
+    // process (they call `vm_read_overwrite(mach_task_self(), …)`), which is
+    // never true for a foreign decrypted IPA just sitting on disk — so reading
+    // `insn.comment` for those here would silently show nothing, every time.
+    // This re-implements the same adrp+ldr/add address-computation pattern —
+    // faithfully, same instruction shapes, same lookahead — but reads the
+    // decoded operands Capstone already gave us (no live memory needed) and
+    // resolves the final address from the real on-disk bytes via MachOTools.
+
+    /// Every `adrp` in `instrs` paired with the `ldr`/`add` that completes its
+    /// address computation, resolved to the real target address each pair
+    /// computes. Pure instruction-stream analysis — no I/O.
+    nonisolated private static func adrpTargets(in instrs: [UCDisasmInstruction]) -> [UInt64] {
+        var out: [UInt64] = []
+        for i in 0..<instrs.count {
+            let insn = instrs[i]
+            guard insn.mnemonic.lowercased() == "adrp",
+                  insn.operandList.count >= 2,
+                  insn.operandList[0].type == .register,
+                  insn.operandList[1].type == .immediate else { continue }
+            let destReg = insn.operandList[0].registerName
+            let pageBase = (insn.address & ~UInt64(0xFFF)) &+ insn.operandList[1].immediateValue
+            let upper = min(i + 11, instrs.count)
+            for j in (i + 1)..<upper {
+                let next = instrs[j]
+                let m = next.mnemonic.lowercased()
+                if m == "ldr", next.operandList.count >= 2,
+                   next.operandList[1].type == .memory,
+                   next.operandList[1].memoryBaseReg == destReg {
+                    out.append(pageBase &+ UInt64(bitPattern: next.operandList[1].memoryOffset))
+                    break
+                }
+                if m == "add", next.operandList.count >= 3,
+                   next.operandList[1].type == .register, next.operandList[1].registerName == destReg,
+                   next.operandList[2].type == .immediate {
+                    out.append(pageBase &+ next.operandList[2].immediateValue)
+                    break
+                }
             }
-            if out.count >= 12 { break }
         }
         return out
+    }
+
+    /// Resolves a computed address to real text: tries it directly as a
+    /// printable C string first (the common case for literal strings), then
+    /// falls back to one pointer dereference through the file (the common
+    /// case for a GOT-style slot like an ObjC selref) and tries that address
+    /// too. Either path only returns something when real, validated bytes are
+    /// actually there — no ObjC runtime struct layout is assumed or guessed.
+    private func resolveReference(at va: UInt64, thin: Data, segments: [MachOTools.Segment]) -> String? {
+        if let s = MachOTools.cString(in: thin, segments: segments, at: va) { return s }
+        if let ptr = MachOTools.pointer(in: thin, segments: segments, at: va),
+           let s = MachOTools.cString(in: thin, segments: segments, at: ptr) { return s }
+        return nil
+    }
+
+    /// Splits resolved references into plain strings vs. ObjC selectors, using
+    /// the real section the computed address falls in — `__objc_selrefs`
+    /// entries are ABI-guaranteed to point straight at a selector name, so a
+    /// resolved hit there is labeled a selector; everything else is a string.
+    private func references(for instrs: [UCDisasmInstruction], thin: Data, sections: [MachOTools.Section], segments: [MachOTools.Segment]) -> (strings: [String], selectors: [String]) {
+        var strings: [String] = [], selectors: [String] = []
+        var seenS = Set<String>(), seenSel = Set<String>()
+        for va in Self.adrpTargets(in: instrs) {
+            guard let resolved = resolveReference(at: va, thin: thin, segments: segments) else { continue }
+            let inSelRefs = sections.contains { $0.name == "__objc_selrefs" && va >= $0.addr && va < $0.addr + $0.size }
+            if inSelRefs {
+                if seenSel.insert(resolved).inserted { selectors.append(resolved) }
+            } else {
+                if seenS.insert(resolved).inserted { strings.append(resolved) }
+            }
+            if strings.count + selectors.count >= 24 { break }
+        }
+        return (strings, selectors)
+    }
+
+    // MARK: String/selector search across every real function
+
+    /// Decodes every function in `functionIndex` (bounded to its own real size,
+    /// same as the CFG viewer) just far enough to pull its real references —
+    /// building a searchable "which function touches X" index. Real work, not
+    /// a shortcut: every entry here comes from an actual Capstone decode of
+    /// that function's own bytes, same as opening it in the CFG viewer would.
+    private func buildStringIndex() async {
+        guard stringIndexState != .loading else { return }
+        stringIndexState = .loading
+        stringIndexProgress = 0
+        if functionIndex.isEmpty { await loadFunctionIndex() }
+        guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil),
+              let text = MachOTools.textSection(ctx.sections, in: ctx.thin),
+              !functionIndex.isEmpty else {
+            stringIndexState = .empty
+            return
+        }
+        var out: [(address: UInt64, name: String, refs: [String])] = []
+        let total = functionIndex.count
+        for (i, fn) in functionIndex.enumerated() {
+            guard fn.address >= text.vmaddr, fn.address < text.vmaddr + UInt64(text.data.count) else { continue }
+            let end = i + 1 < functionIndex.count ? functionIndex[i + 1].address : fn.address + 4096
+            let delta = Int(fn.address - text.vmaddr)
+            let cap = min(Int(end - fn.address), max(0, text.data.count - delta))
+            if cap >= 4 {
+                let window = text.data.subdata(in: delta ..< delta + cap)
+                if let result = UCDisassembler.sharedInstance().disassembleData(window, baseAddress: fn.address) {
+                    let refs = references(for: result.instructions, thin: ctx.thin, sections: ctx.sections, segments: ctx.segments)
+                    let all = refs.strings + refs.selectors.map { "@selector(\($0))" }
+                    if !all.isEmpty { out.append((fn.address, fn.name, all)) }
+                }
+            }
+            if i % 20 == 0 {
+                stringIndexProgress = Double(i) / Double(max(total, 1))
+                await Task.yield()
+            }
+        }
+        stringIndex = out
+        stringIndexProgress = 1
+        stringIndexState = stringIndex.isEmpty ? .empty : .ready
+    }
+
+    private var stringIndexResults: [(address: UInt64, name: String, refs: [String])] {
+        let q = stringIndexQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return stringIndex }
+        return stringIndex.compactMap { entry in
+            let matched = entry.refs.filter { $0.lowercased().contains(q) }
+            if !matched.isEmpty { return (entry.address, entry.name, matched) }
+            if entry.name.lowercased().contains(q) { return entry }
+            return nil
+        }
+    }
+
+    private var stringIndexSheet: some View {
+        NavigationStack {
+            Group {
+                switch stringIndexState {
+                case .idle, .loading:
+                    VStack(spacing: 10) {
+                        ProgressView(value: stringIndexProgress).tint(blue).frame(width: 180)
+                        Text("Decoding every function for real string/selector refs… \(Int(stringIndexProgress * 100))%")
+                            .font(.caption).foregroundStyle(Theme.subtle)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .empty:
+                    VStack(spacing: 8) {
+                        Image(systemName: "text.magnifyingglass").font(.largeTitle).foregroundStyle(Theme.subtle)
+                        Text("No resolvable string or selector references found.").font(.subheadline).foregroundStyle(Theme.text)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .ready:
+                    List {
+                        Section {
+                            ForEach(stringIndexResults, id: \.address) { entry in
+                                Button {
+                                    disasmVA = String(format: "0x%llx", entry.address)
+                                    cfgPicked = true
+                                    autoShowInfoOnLoad = true
+                                    cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []
+                                    showStringIndex = false
+                                    Task { await openLocalCFG() }
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack {
+                                            Text(entry.name).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                                            Spacer()
+                                            Image(systemName: "arrow.forward.circle").foregroundStyle(blue)
+                                        }
+                                        Text(entry.refs.prefix(3).map { "\"\($0)\"" }.joined(separator: "  "))
+                                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle).lineLimit(1)
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("\(stringIndexResults.count) of \(stringIndex.count) functions with real references")
+                        }.listRowBackground(Color(white: 0.08))
+                    }
+                    .scrollContentBackground(.hidden).background(Color.black)
+                    .searchable(text: $stringIndexQuery, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search strings or selectors")
+                }
+            }
+            .background(Color.black)
+            .navigationTitle("String Search").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showStringIndex = false } } }
+        }
+        .preferredColorScheme(.dark)
     }
 
     private var functionListResults: [(address: UInt64, name: String)] {
@@ -1814,7 +1995,7 @@ struct DeveloperToolSheet: View {
                                     disasmVA = String(format: "0x%llx", fn.address)
                                     cfgPicked = true
                                     autoShowInfoOnLoad = true
-                                    cfgCallers = []; cfgCallersState = .idle
+                                    cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []
                                     showFunctionList = false
                                     Task { await openLocalCFG() }
                                 } label: {
@@ -1862,18 +2043,47 @@ struct DeveloperToolSheet: View {
                             Text("\(fn.instructions.count) instructions · \(fn.basicBlockCount) basic blocks\(fn.boundaryIsBounded ? " · bounded by the next function" : "")")
                                 .font(.caption).foregroundStyle(Theme.subtle)
                         }
+                        HStack(spacing: 10) {
+                            Button { Task { await patchAt(va: fn.startAddress, ret: false) } } label: {
+                                Label("NOP entry", systemImage: "scissors")
+                            }
+                            Button { Task { await patchAt(va: fn.startAddress, ret: true) } } label: {
+                                Label("RET entry", systemImage: "arrow.uturn.backward")
+                            }
+                        }
+                        .font(.caption.weight(.semibold)).buttonStyle(.bordered).tint(blue)
+                        if patches.contains(where: { $0.label.hasSuffix(String(format: "0x%llx", fn.startAddress)) }) {
+                            Label("Patch queued for this function — applies at sign time", systemImage: "checkmark.seal.fill")
+                                .font(.caption2).foregroundStyle(.green)
+                        }
                     }.listRowBackground(Color(white: 0.08))
 
                     Section {
-                        if cfgReferencedStrings.isEmpty {
-                            Text("No string/class references resolved in this function.").font(.caption).foregroundStyle(Theme.subtle)
+                        if cfgRefStrings.isEmpty {
+                            Text("No real string references resolved in this function.").font(.caption).foregroundStyle(Theme.subtle)
                         } else {
-                            ForEach(cfgReferencedStrings, id: \.self) { s in
+                            ForEach(cfgRefStrings, id: \.self) { s in
                                 Text("\"\(s)\"").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
                             }
                         }
                     } header: {
-                        Text("References — strings & classes it touches")
+                        Text("References — strings it touches")
+                    } footer: {
+                        Text("Resolved statically from the file's adrp+ldr/add pairs — not a live-process read, so this works on any IPA, not just AirShare's own code.")
+                    }.listRowBackground(Color(white: 0.08))
+
+                    Section {
+                        if cfgRefSelectors.isEmpty {
+                            Text("No Objective-C selectors referenced in this function.").font(.caption).foregroundStyle(Theme.subtle)
+                        } else {
+                            ForEach(cfgRefSelectors, id: \.self) { s in
+                                Text("@selector(\(s))").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                            }
+                        }
+                    } header: {
+                        Text("Objective-C messages sent")
+                    } footer: {
+                        Text("Every adrp+ldr pair whose slot lands in __objc_selrefs — the ABI guarantees that table only ever holds selector names, so this is real, not a guess at which bl is objc_msgSend.")
                     }.listRowBackground(Color(white: 0.08))
 
                     Section {
@@ -1923,7 +2133,7 @@ struct DeveloperToolSheet: View {
             disasmVA = String(format: "0x%llx", address)
             cfgPicked = true
             autoShowInfoOnLoad = true
-            cfgCallers = []; cfgCallersState = .idle
+            cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []
             showFunctionInfo = false
             cfgFunction = nil
             Task { await openLocalCFG() }
@@ -2402,6 +2612,9 @@ struct DeveloperToolSheet: View {
         function.basicBlocks = blocks
         function.basicBlockCount = UInt(blocks.count)
         cfgFunction = function
+        let refs = references(for: result.instructions, thin: ctx.thin, sections: ctx.sections, segments: ctx.segments)
+        cfgRefStrings = refs.strings
+        cfgRefSelectors = refs.selectors
         cfgStatus = "Capstone · \(blocks.count) blocks · \(result.instructions.count) instructions · bounded analysis window"
         showCFGViewer = true
         if autoShowInfoOnLoad {
@@ -2412,13 +2625,23 @@ struct DeveloperToolSheet: View {
     }
 
     private func patchFunc(ret: Bool) async {
-        guard let va = UInt64(disasmVA.replacingOccurrences(of: "0x", with: ""), radix: 16),
-              let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil),
+        guard let va = UInt64(disasmVA.replacingOccurrences(of: "0x", with: ""), radix: 16) else { return }
+        await patchAt(va: va, ret: ret)
+    }
+
+    /// Queues a real NOP/RET patch at an arbitrary address — the same logic
+    /// `patchFunc(ret:)` uses for the typed-VA field in Patch Functions, just
+    /// callable directly from the CFG viewer so picking a function's entry
+    /// point there and patching it is one tap instead of copying the address
+    /// over to a separate screen.
+    private func patchAt(va: UInt64, ret: Bool) async {
+        guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil),
               let off = MachOTools.fileOffset(forVA: va, segments: ctx.segments) else { return }
         // NOP = 0x1F2003D5 (little-endian D503201F), RET = 0xC0035FD6.
         let bytes: [UInt8] = ret ? [0xC0, 0x03, 0x5F, 0xD6] : [0x1F, 0x20, 0x03, 0xD5]
         let orig = off + 4 <= ctx.thin.count ? Array(ctx.thin[off ..< off + 4]) : []
-        let p = BinaryPatch(label: "\(ret ? "RET" : "NOP") @ \(disasmVA)", fileOffset: off, bytes: bytes, original: orig)
+        let label = "\(ret ? "RET" : "NOP") @ \(String(format: "0x%llx", va))"
+        let p = BinaryPatch(label: label, fileOffset: off, bytes: bytes, original: orig)
         patches.removeAll { $0.fileOffset == off }
         patches.append(p)
     }

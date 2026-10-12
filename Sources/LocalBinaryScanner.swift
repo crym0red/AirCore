@@ -245,6 +245,43 @@ nonisolated enum MachOTools {
         return nil
     }
 
+    /// Reads a NUL-terminated printable C string straight from the on-disk bytes
+    /// at a VA — the static, file-based replacement for the disassembler's own
+    /// `stringAtAddress:`, which only works when the target is actually mapped
+    /// live into the current process (it isn't, for a foreign IPA on disk).
+    static func cString(in thin: Data, segments: [Segment], at va: UInt64, maxLen: Int = 220) -> String? {
+        guard va != 0, let off = fileOffset(forVA: va, segments: segments),
+              off >= 0, off < thin.count else { return nil }
+        var bytes: [UInt8] = []
+        var i = thin.startIndex + off
+        let limit = Swift.min(i + maxLen, thin.endIndex)
+        var terminated = false
+        while i < limit {
+            let b = thin[i]
+            if b == 0 { terminated = true; break }
+            // Printable ASCII only (plus common whitespace) — same bar the
+            // disassembler's own validation uses, so a garbage read never
+            // surfaces as a plausible-looking "string".
+            guard (b >= 0x20 && b <= 0x7E) || b == 0x09 || b == 0x0A || b == 0x0D else { return nil }
+            bytes.append(b)
+            i += 1
+        }
+        // Require an actual NUL terminator within maxLen — a run that just hit
+        // the scan cap without one isn't a verified C string, so it's rejected
+        // rather than shown as a truncated guess.
+        guard terminated, !bytes.isEmpty else { return nil }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// Reads one 8-byte little-endian pointer value from the file at a VA —
+    /// for dereferencing a GOT-style slot (objc selref/classref table entries
+    /// are just pointers) without touching live process memory or guessing at
+    /// any runtime struct layout.
+    static func pointer(in thin: Data, segments: [Segment], at va: UInt64) -> UInt64? {
+        guard let off = fileOffset(forVA: va, segments: segments), off >= 0, off + 8 <= thin.count else { return nil }
+        return thin.u64le(off)
+    }
+
     /// Extract the __TEXT,__text code section data + its VM address.
     static func textSection(_ sections: [Section], in thin: Data) -> (data: Data, vmaddr: UInt64)? {
         guard let s = sections.first(where: { $0.segment == "__TEXT" && $0.name == "__text" }) else { return nil }
