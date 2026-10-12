@@ -1114,7 +1114,7 @@ struct AppDetailSheet: View {
     @State private var onDevice = false
     @State private var error: String?
 
-    private let blue = Color(red: 0.25, green: 0.55, blue: 1.0)
+    private var blue: Color { Theme.accent }
 
     private var detailTitleBar: some View {
         ZStack {
@@ -1170,7 +1170,7 @@ struct AppDetailSheet: View {
                 bottomBar.floatingGlassBar(edge: .bottom)
             }
         }
-        .background(Color.black.ignoresSafeArea())
+        .background(Theme.bg.ignoresSafeArea())
         .onAppear { selectedID = group.latest.id; refreshDevice() }
         .task {
             await AppStatsStore.shared.reportView(bundle: group.latest.bundle)
@@ -1203,8 +1203,7 @@ struct AppDetailSheet: View {
                         Text(app.description.isEmpty ? "No description." : app.description).font(.system(size: 13)).foregroundStyle(Theme.text)
                     }
                 }
-                .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.white.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 14))
+                .padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
             }
             VStack(spacing: 6) {
                 stat("v\(app.version)", "VERSION")
@@ -1215,8 +1214,7 @@ struct AppDetailSheet: View {
             }
             .frame(width: 74)
         }
-        .padding(10)
-        .background(Color(white: 0.11)).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(.horizontal, 4).padding(.vertical, 10)
     }
 
     private func stat(_ v: String, _ k: String) -> some View {
@@ -1225,7 +1223,6 @@ struct AppDetailSheet: View {
             Text(k).font(.system(size: 8, weight: .semibold)).kerning(0.8).foregroundStyle(Theme.subtle)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 8)
-        .background(Color.white.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
     private var updatedText: String { ageText(app.updated) }
@@ -1254,7 +1251,7 @@ struct AppDetailSheet: View {
                 if sel { Image(systemName: "checkmark").font(.system(size: 16, weight: .bold)).foregroundStyle(blue) }
             }
             .padding(12)
-            .background(sel ? Color(red: 0.06, green: 0.09, blue: 0.16) : Color(white: 0.09))
+            .background(sel ? Theme.accent.opacity(0.10) : Color.clear)
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(sel ? blue.opacity(0.35) : Theme.stroke, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 16))
         }
@@ -1284,7 +1281,7 @@ struct AppDetailSheet: View {
                 }
             }
         }
-        .padding(12).background(Color(white: 0.11)).clipShape(RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal, 4).padding(.vertical, 12)
     }
 
     private var bottomBar: some View {
@@ -1301,7 +1298,7 @@ struct AppDetailSheet: View {
             .disabled(downloading || app.downloadURL == nil)
             Spacer()
             VStack(spacing: 2) {
-                Text("MRZefv").font(.system(size: 14, weight: .bold)).foregroundStyle(.orange).lineLimit(1)
+                Text("MRZefv").font(.system(size: 14, weight: .bold)).foregroundStyle(Color(red: 1.0, green: 0.60, blue: 0.12)).lineLimit(1)
                 Text("Powered by \((source.url.host ?? source.name).uppercased())").font(.system(size: 9, weight: .semibold)).foregroundStyle(blue).lineLimit(1).minimumScaleFactor(0.7)
             }
             .frame(maxWidth: .infinity)

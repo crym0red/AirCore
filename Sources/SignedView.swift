@@ -128,7 +128,7 @@ struct AppActionSheet: View {
     let icon: Data?
     let actions: [Action]
 
-    private let blue = Color(red: 0.25, green: 0.55, blue: 1.0)
+    private var blue: Color { Theme.accent }
 
     var body: some View {
         VStack(spacing: 0) {

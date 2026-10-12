@@ -15,11 +15,7 @@ struct SSTheme {
     // MARK: - Tint Color (orange by default)
 
     static var tintColor: Color {
-        if let hexString = UserDefaults.standard.string(forKey: "appTintColorHex"),
-           !hexString.isEmpty {
-            return Color(hex: hexString)
-        }
-        return Color(hex: "FF9500")
+        return Theme.accent   // follows the live accent chosen in the theme palette
     }
 
     // MARK: - Static Color Properties (backward compatibility)

@@ -26,7 +26,7 @@ struct McryptedRecoverView: View {
     @State private var showPicker = false
     @State private var showShare = false
 
-    private let blue = Color(red: 0.25, green: 0.55, blue: 1.0)
+    private var blue: Color { Theme.accent }
 
     var body: some View {
         NavigationStack {

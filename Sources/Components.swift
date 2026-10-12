@@ -67,7 +67,7 @@ struct AirShareRow: View {
     let badge: String           // "Signed 2h ago" / "Downloaded"
     var badgeAccented: Bool = false      // tinted pill (AirShare uses it for TrollStore)
     var busy: Bool = false
-    var accent: Color = Color(red: 0.25, green: 0.55, blue: 1.0)
+    var accent: Color = Theme.accent
     let onAction: () -> Void
     let onTap: () -> Void
 

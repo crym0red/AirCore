@@ -90,10 +90,10 @@ struct SigningSheet: View {
     @State private var installing = false
     @State private var showBulkSigning = false
 
-    private let blue = Color(red: 0.25, green: 0.55, blue: 1.0)
-    private let accent = Color(red: 0.25, green: 0.55, blue: 1.0)      // same blue as the reference layout
-    private let accentSoft = Color(red: 0.45, green: 0.68, blue: 1.0)
-    private let accentTint = Color(red: 0.07, green: 0.12, blue: 0.22)
+    private var blue: Color { Theme.accent }
+    private var accent: Color { Theme.accent }
+    private var accentSoft: Color { Theme.accent.opacity(0.8) }
+    private var accentTint: Color { Theme.accent.opacity(0.14) }
     private let surface = Color(red: 0.06, green: 0.06, blue: 0.07)
     private let surfaceRaised = Color(red: 0.09, green: 0.09, blue: 0.10)
     private let success = Color(red: 0.45, green: 0.79, blue: 0.34)
@@ -1372,7 +1372,7 @@ struct DeveloperToolSheet: View {
     @State private var cfgFunction: UCFunction?
     @State private var cfgStatus: String?
 
-    private let blue = Color(red: 0.25, green: 0.55, blue: 1.0)
+    private var blue: Color { Theme.accent }
 
     private var filtered: [AVXScanHit] {
         var out = hits
@@ -2239,7 +2239,7 @@ private struct TurboBulkSigningView: View {
                 VStack(spacing: 6) {
                     Image(systemName: "speedometer")
                         .font(.system(size: 30, weight: .bold))
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(Theme.accent)
                     Text("ZSign Turbo")
                         .font(.title2.bold())
                     Text("Local bulk signing · adaptive workers · per-job parallelism")
@@ -2432,8 +2432,8 @@ struct SigningTerminalView: View {
     @State private var showAll = false
     @State private var lastStepCount = 0
 
-    private let accent = Color(red: 1.0, green: 0.60, blue: 0.10)   // MRZefv orange
-    private let blue = Color(red: 0.25, green: 0.55, blue: 1.0)
+    private var accent: Color { Theme.accent }
+    private var blue: Color { Theme.accent }
     private let green = Color(red: 0.2, green: 1.0, blue: 0.45)
 
     var body: some View {
@@ -2637,8 +2637,8 @@ struct InstallPromptOverlay: View {
     @State private var showContainers = false
     @State private var copied = false
 
-    private let accent = Color(red: 1.0, green: 0.60, blue: 0.10)
-    private let blue = Color(red: 0.25, green: 0.55, blue: 1.0)
+    private var accent: Color { Theme.accent }
+    private var blue: Color { Theme.accent }
 
     private var sizeText: String { sizeBytes > 0 ? ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file) : "—" }
     private var isUnsandboxed: Bool { entitlements["platform-application"] == "true" || entitlements["com.apple.security.app-sandbox"] == "false" }
@@ -2788,7 +2788,7 @@ struct SentToHomeOverlay: View {
     let host: String
     @State private var progress: CGFloat = 0
 
-    private let blue = Color(red: 0.25, green: 0.55, blue: 1.0)
+    private var blue: Color { Theme.accent }
 
     var body: some View {
         ZStack {
