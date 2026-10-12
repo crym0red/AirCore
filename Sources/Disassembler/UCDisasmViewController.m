@@ -1030,12 +1030,16 @@
     // time, not just during the momentary tap highlight — so loops are
     // visible at a glance while scanning the whole graph.
     if ([self.loopBlockIds containsObject:@(block.blockId)]) {
-        CALayer *loopStripe = [CALayer layer];
-        loopStripe.name = @"loopStripe";
-        loopStripe.backgroundColor = [UIColor colorWithRed:0.9 green:0.5 blue:0.1 alpha:1.0].CGColor;
-        loopStripe.frame = CGRectMake(0, 0, 3, view.bounds.size.height);
-        loopStripe.autoresizingMask = kCALayerHeightSizable;
-        [view.layer addSublayer:loopStripe];
+        // A plain UIView, not a CALayer: CALayer has no -autoresizingMask on iOS
+        // (that's a macOS-only AppKit/CALayer bridge thing — kCALayerHeightSizable
+        // isn't even declared in the iOS SDK), so the layer version failed to
+        // compile outright. UIView gives the same flexible-height auto-resize
+        // behavior for free via UIViewAutoresizingFlexibleHeight.
+        UIView *loopStripe = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 3, view.bounds.size.height)];
+        loopStripe.backgroundColor = [UIColor colorWithRed:0.9 green:0.5 blue:0.1 alpha:1.0];
+        loopStripe.autoresizingMask = UIViewAutoresizingFlexibleHeight;
+        loopStripe.userInteractionEnabled = NO;
+        [view addSubview:loopStripe];
 
         UILabel *loopBadge = [[UILabel alloc] init];
         loopBadge.text = @"↻"; // ↻
