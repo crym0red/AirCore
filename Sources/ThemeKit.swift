@@ -19,6 +19,22 @@ enum ThemeBackground: String, CaseIterable, Identifiable {
     }
 }
 
+enum CycleMode: String, CaseIterable, Identifiable {
+    case off, background, app
+    var id: String { rawValue }
+    var title: String { switch self { case .off: return "Off"; case .background: return "Background"; case .app: return "Whole app" } }
+    var icon: String { switch self { case .off: return "nosign"; case .background: return "sparkles"; case .app: return "paintpalette.fill" } }
+}
+
+/// Rotates a color's hue by `turns` (1 = full circle). Cheap enough to call per frame.
+nonisolated func hueShifted(_ c: Color, by turns: Double) -> Color {
+    var h: CGFloat = 0, sa: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+    UIColor(c).getHue(&h, saturation: &sa, brightness: &b, alpha: &a)
+    var nh = Double(h) + turns
+    nh -= floor(nh)
+    return Color(hue: nh, saturation: Double(sa), brightness: Double(b), opacity: Double(a))
+}
+
 enum ParticleTouchMode: String, CaseIterable, Identifiable {
     case grab, repulse, attract, off
     var id: String { rawValue }
@@ -53,7 +69,26 @@ final class AppTheme: ObservableObject {
     @Published var particleSpeed: Double { didSet { d.set(particleSpeed, forKey: "as_p_speed") } }
     @Published var particleTouch: ParticleTouchMode { didSet { d.set(particleTouch.rawValue, forKey: "as_p_touch") } }
 
+    /// Auto-cycle: `.background` drifts only the particle/grid layer (smooth, no re-skin);
+    /// `.app` steps the real accent every 20 s (re-skins the app, so it is slow on purpose).
+    @Published var cycleMode: CycleMode { didSet { d.set(cycleMode.rawValue, forKey: "as_cycle"); restartCycle() } }
+    private var cycleTask: Task<Void, Never>?
+
+    private func restartCycle() {
+        cycleTask?.cancel(); cycleTask = nil
+        guard cycleMode == .app else { return }
+        cycleTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                let next = hueShifted(Color(hex: self.accentHex), by: 0.03)
+                if let h = next.hexString() { self.accentHex = h.replacingOccurrences(of: "#", with: "").uppercased() }
+            }
+        }
+    }
+
     private init() {
+        cycleMode = CycleMode(rawValue: d.string(forKey: "as_cycle") ?? "") ?? .off
         particleDensity = (d.object(forKey: "as_p_density") as? Double) ?? 1.0
         particleSpeed   = (d.object(forKey: "as_p_speed") as? Double) ?? 1.0
         particleTouch   = ParticleTouchMode(rawValue: d.string(forKey: "as_p_touch") ?? "") ?? .grab
@@ -62,6 +97,7 @@ final class AppTheme: ObservableObject {
         background = ThemeBackground(rawValue: d.string(forKey: Theme.keyBackground) ?? "") ?? .particles
     }
     private func bump() { revision &+= 1 }
+    func startCycleIfNeeded() { if cycleMode == .app && cycleTask == nil { restartCycle() } }
 
     var accent: Color { Color(hex: accentHex) }
     var colorScheme: ColorScheme { isDark ? .dark : .light }
@@ -155,6 +191,23 @@ struct ThemePanel: View {
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
+
+            // Auto-cycle hue
+            Menu {
+                ForEach(CycleMode.allCases) { m in
+                    Button { theme.cycleMode = m } label: { Label(m.title, systemImage: m == theme.cycleMode ? "checkmark" : m.icon) }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.accent).frame(width: 18)
+                    Text("Auto-cycle").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.subtle)
+                    Spacer(minLength: 4)
+                    Text(theme.cycleMode.title).font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.text)
+                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.subtle)
+                }
+                .padding(.horizontal, 6).frame(height: 28).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
             Divider().overlay(Theme.stroke)
 
@@ -323,6 +376,7 @@ struct ParticleBackground: View {
     var density: Double = 1
     var speed: Double = 1
     var touch: ParticleTouchMode = .grab
+    var cycle: Bool = false
     var linkDistance: CGFloat = 120
 
     private final class Sim {
@@ -380,6 +434,7 @@ struct ParticleBackground: View {
     var body: some View {
         BGTimeline(fps: 30) { tl in
             Canvas { ctx, size in
+                let accent = cycle ? hueShifted(self.accent, by: tl.date.timeIntervalSinceReferenceDate / 60) : self.accent
                 let area = size.width * size.height
                 let count = Swift.max(12, Swift.min(110, Int(area / 9000 * CGFloat(density))))
                 let ns = sim.step(to: tl.date, size: size, count: count, speed: CGFloat(speed), touch: touch)
@@ -429,11 +484,13 @@ struct GridBackground: View {
     var density: Double = 1
     var speed: Double = 1
     var touch: ParticleTouchMode = .grab
+    var cycle: Bool = false
 
     var body: some View {
         BGTimeline(fps: 30) { tl in
             Canvas { ctx, size in
                 let t = tl.date.timeIntervalSinceReferenceDate
+                let accent = cycle ? hueShifted(self.accent, by: t / 60) : self.accent
                 let now = Date.timeIntervalSinceReferenceDate
                 let step = Swift.min(Swift.max(CGFloat(40 / density), 22), 64)
                 let cols = Int(size.width / step) + 2, rows = Int(size.height / step) + 2
@@ -514,8 +571,8 @@ struct ThemeBackgroundLayer: View {
     @ObservedObject private var theme = AppTheme.shared
     var body: some View {
         switch theme.background {
-        case .particles: ParticleBackground(accent: theme.accent, density: theme.particleDensity, speed: theme.particleSpeed, touch: theme.particleTouch)
-        case .grid:      GridBackground(accent: theme.accent, density: theme.particleDensity, speed: theme.particleSpeed, touch: theme.particleTouch)
+        case .particles: ParticleBackground(accent: theme.accent, density: theme.particleDensity, speed: theme.particleSpeed, touch: theme.particleTouch, cycle: theme.cycleMode == .background)
+        case .grid:      GridBackground(accent: theme.accent, density: theme.particleDensity, speed: theme.particleSpeed, touch: theme.particleTouch, cycle: theme.cycleMode == .background)
         case .none:      EmptyView()
         }
     }

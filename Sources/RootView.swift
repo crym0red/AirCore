@@ -75,6 +75,7 @@ struct RootView: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: theme.panelShown)
 
         .task {
+            theme.startCycleIfNeeded()
             await account.autoLoginIfNeeded()          // recognized ADID + device key → signed in, no password
             await SourceStore.shared.warmUpAtLaunch()
             WidgetDataManager.shared.refresh()
