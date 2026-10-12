@@ -166,6 +166,9 @@ struct SigningSheet: View {
         .sheet(isPresented: $showBulkSigning) {
             TurboBulkSigningView(defaultOptions: buildOptionsValue())
         }
+        .sheet(isPresented: $showProtectionAnalysis) {
+            ProtectionAnalysisSheet(ipaURL: ipaURL)
+        }
         .fullScreenCover(isPresented: $showTerminal) {
             SigningTerminalView(
                 appName: name, bundle: bundle, icon: iconPNG ?? meta.iconPNG,
@@ -1714,7 +1717,6 @@ struct DeveloperToolSheet: View {
         .sheet(isPresented: $showObjCBrowser) { objcBrowserSheet }
         .sheet(isPresented: $showAIHookCatalog) { AIHookCatalogView() }
         .sheet(isPresented: $showGateFinder) { gateFinderSheet }
-        .sheet(isPresented: $showProtectionAnalysis) { ProtectionAnalysisSheet(ipaURL: ipaURL) }
         .sheet(item: $batchPatchPreview) { b in batchPatchPreviewSheet(b) }
         .sheet(isPresented: $showManifest) { manifestSheet }
     }

@@ -98,10 +98,14 @@ nonisolated enum ProtectionAnalysis {
                 while cursor < end, thin[thin.startIndex + cursor] != 0 { cursor += 1 }
                 let length = cursor - stringStart
                 if length >= 4, length <= 4096,
-                   let value = String(data: thin.subdata(in: stringStart..<cursor), encoding: .utf8),
-                   value.unicodeScalars.allSatisfy({ !$0.properties.isControl }) {
-                    hits.append(StringHit(value: value, section: section.name,
-                                          va: section.addr + UInt64(stringStart - start), fileOffset: stringStart))
+                   let value = String(data: thin.subdata(in: stringStart..<cursor), encoding: .utf8) {
+                    let containsControl = value.unicodeScalars.contains {
+                        CharacterSet.controlCharacters.contains($0)
+                    }
+                    if !containsControl {
+                        hits.append(StringHit(value: value, section: section.name,
+                                              va: section.addr + UInt64(stringStart - start), fileOffset: stringStart))
+                    }
                 }
                 cursor += 1
             }
@@ -146,11 +150,16 @@ struct ProtectionAnalysisSheet: View {
     @State private var query = ""
     @State private var impactFinding: ProtectionFinding?
     @State private var showManualPatchWorkbench = false
+    @State private var showTestOnlyTrustConfiguration = false
 
     private var categories: [String] { ["All"] + Array(Set(findings.map(\.category))).sorted() }
     private var filtered: [ProtectionFinding] {
-        findings.filter { (selectedCategory == "All" || $0.category == selectedCategory) &&
-            (query.isEmpty || ($0.title + " " + $0.location + " " + $0.evidence.joined(separator: " ")).localizedCaseInsensitiveContains(query)) }
+        findings.filter { finding in
+            let matchesCategory = selectedCategory == "All" || finding.category == selectedCategory
+            let combinedText = finding.title + " " + finding.location + " " + finding.evidence.joined(separator: " ")
+            let matchesQuery = query.isEmpty || combinedText.localizedCaseInsensitiveContains(query)
+            return matchesCategory && matchesQuery
+        }
     }
 
     var body: some View {
@@ -174,6 +183,10 @@ struct ProtectionAnalysisSheet: View {
                             TextField("Search findings", text: $query)
                             Button { showManualPatchWorkbench = true } label: {
                                 Label("Open Manual Patch Generator", systemImage: "wrench.and.screwdriver")
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                            Button { showTestOnlyTrustConfiguration = true } label: {
+                                Label("Test-Only TLS Trust Configuration", systemImage: "checkmark.shield")
                                     .font(.subheadline.weight(.semibold))
                             }
                         }
@@ -213,6 +226,9 @@ struct ProtectionAnalysisSheet: View {
             }
             .sheet(isPresented: $showManualPatchWorkbench) {
                 ManualPatchWorkbench(findings: findings, ipaURL: ipaURL)
+            }
+            .sheet(isPresented: $showTestOnlyTrustConfiguration) {
+                TestOnlyTrustConfigurationView()
             }
             .task {
                 findings = await ProtectionAnalysis.scan(ipaURL: ipaURL)
