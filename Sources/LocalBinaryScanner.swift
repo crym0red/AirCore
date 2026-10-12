@@ -237,6 +237,96 @@ nonisolated enum MachOTools {
         return out
     }
 
+    /// Maps the virtual address of a call stub / lazy or non-lazy symbol
+    /// pointer to the real imported symbol name it ultimately resolves to —
+    /// the exact mechanism `nm -m`/`otool -I` use: LC_DYSYMTAB's indirect
+    /// symbol table, cross-referenced with each stub/pointer section's own
+    /// `reserved1` (the starting index into that table) and, for
+    /// S_SYMBOL_STUBS sections, `reserved2` (the real per-stub size in bytes,
+    /// as the linker wrote it — not guessed from disassembly). This is how a
+    /// `bl` into `__stubs` or a load from `__la_symbol_ptr`/`__got` is traced
+    /// back to the actual external API being called (`_objc_msgSend`,
+    /// `_NSLog`, a framework C function, …), with zero struct-layout guessing.
+    static func importStubMap(in thin: Data) -> [UInt64: String] {
+        guard is64(thin) else { return [:] }
+        let ncmds = Int(thin.u32le(16))
+        var off = 32
+        var indirectSymOff = 0, nIndirectSyms = 0
+        var symoff = 0, nsyms = 0, stroff = 0, strsize = 0
+        var stubSections: [(addr: UInt64, size: UInt64, reserved1: UInt32, reserved2: UInt32, flags: UInt32)] = []
+        for _ in 0..<ncmds {
+            guard off + 8 <= thin.count else { break }
+            let cmd = thin.u32le(off); let size = Int(thin.u32le(off + 4))
+            guard size >= 8, off + size <= thin.count else { break }
+            if cmd == 0x19 {   // LC_SEGMENT_64
+                let nsects = Int(thin.u32le(off + 64))
+                var s = off + 72
+                for _ in 0..<nsects {
+                    guard s + 80 <= thin.count else { break }
+                    let addr = thin.u64le(s + 32)
+                    let secsize = thin.u64le(s + 40)
+                    let flags = thin.u32le(s + 64)
+                    let reserved1 = thin.u32le(s + 68)
+                    let reserved2 = thin.u32le(s + 72)
+                    let sectionType = flags & 0xFF
+                    // S_NON_LAZY_SYMBOL_POINTERS=0x6, S_LAZY_SYMBOL_POINTERS=0x7,
+                    // S_SYMBOL_STUBS=0x8, S_LAZY_DYLIB_SYMBOL_POINTERS=0x9 —
+                    // the only section types the indirect symbol table covers.
+                    if sectionType == 0x6 || sectionType == 0x7 || sectionType == 0x8 || sectionType == 0x9 {
+                        stubSections.append((addr, secsize, reserved1, reserved2, flags))
+                    }
+                    s += 80
+                }
+            } else if cmd == 0x0B {   // LC_DYSYMTAB
+                indirectSymOff = Int(thin.u32le(off + 56))
+                nIndirectSyms = Int(thin.u32le(off + 60))
+            } else if cmd == 0x02 {   // LC_SYMTAB
+                symoff = Int(thin.u32le(off + 8))
+                nsyms = Int(thin.u32le(off + 12))
+                stroff = Int(thin.u32le(off + 16))
+                strsize = Int(thin.u32le(off + 20))
+            }
+            off += size
+        }
+        guard indirectSymOff > 0, nIndirectSyms > 0, symoff > 0, nsyms > 0, strsize > 0,
+              !stubSections.isEmpty,
+              indirectSymOff + nIndirectSyms * 4 <= thin.count,
+              symoff + nsyms * 16 <= thin.count, stroff + strsize <= thin.count else { return [:] }
+
+        func indirectEntry(_ i: Int) -> UInt32 { thin.u32le(indirectSymOff + i * 4) }
+        func symbolName(_ symIndex: Int) -> String? {
+            guard symIndex >= 0, symIndex < nsyms else { return nil }
+            let base = symoff + symIndex * 16
+            guard base + 16 <= thin.count else { return nil }
+            let strx = Int(thin.u32le(base))
+            guard strx > 0, strx < strsize else { return nil }
+            return thin.cString(at: stroff + strx, max: strsize - strx)
+        }
+
+        let INDIRECT_SYMBOL_LOCAL: UInt32 = 0x8000_0000
+        let INDIRECT_SYMBOL_ABS: UInt32 = 0x4000_0000
+        var out: [UInt64: String] = [:]
+        for sec in stubSections {
+            let sectionType = sec.flags & 0xFF
+            // Only S_SYMBOL_STUBS (0x8) sections have a per-stub size that
+            // isn't just a pointer — reserved2 is the linker-written stub
+            // byte length; everything else here is an 8-byte pointer slot.
+            let elementSize: UInt64 = sectionType == 0x8 ? UInt64(sec.reserved2) : 8
+            guard elementSize > 0, sec.size > 0 else { continue }
+            let count = Int(sec.size / elementSize)
+            for i in 0..<count {
+                let idx = Int(sec.reserved1) + i
+                guard idx < nIndirectSyms else { break }
+                let symIdx = indirectEntry(idx)
+                guard symIdx & INDIRECT_SYMBOL_LOCAL == 0, symIdx & INDIRECT_SYMBOL_ABS == 0 else { continue }
+                guard let name = symbolName(Int(symIdx)), !name.isEmpty else { continue }
+                let addr = sec.addr + UInt64(i) * elementSize
+                out[addr] = name.hasPrefix("_") ? String(name.dropFirst()) : name
+            }
+        }
+        return out
+    }
+
     /// Map a virtual address to a file offset *within the thin slice*.
     static func fileOffset(forVA va: UInt64, segments: [Segment]) -> Int? {
         for s in segments where va >= s.vmaddr && va < s.vmaddr + s.filesize {

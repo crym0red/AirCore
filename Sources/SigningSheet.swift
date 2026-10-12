@@ -1396,6 +1396,9 @@ struct DeveloperToolSheet: View {
     @State private var cfgRefSelectors: [String] = []
     @State private var cfgRefClasses: [String] = []
     @State private var symbolTable: [UInt64: String] = [:]
+    @State private var importMap: [UInt64: String] = [:]
+    @State private var showObjCBrowser = false
+    @State private var objcBrowserQuery = ""
     @State private var showStringIndex = false
     @State private var stringIndexQuery = ""
     @State private var stringIndex: [(address: UInt64, name: String, refs: [String])] = []
@@ -1412,7 +1415,7 @@ struct DeveloperToolSheet: View {
     /// target that isn't covered by this binary's own LC_FUNCTION_STARTS
     /// (typically an imported/stub symbol); `.indirect` is a `blr` through a
     /// register, which has no static target at all.
-    enum CallGraphEdgeKind { case root, direct, external, indirect }
+    enum CallGraphEdgeKind { case root, direct, imported, external, indirect }
     enum CallGraphDirection { case callees, callers }
 
     /// One node in the interactive call graph. A reference type (not a
@@ -1598,6 +1601,7 @@ struct DeveloperToolSheet: View {
         .sheet(isPresented: $showFunctionInfo) { functionInfoSheet }
         .sheet(isPresented: $showStringIndex) { stringIndexSheet }
         .sheet(isPresented: $showCallGraph) { callGraphSheet }
+        .sheet(isPresented: $showObjCBrowser) { objcBrowserSheet }
     }
 
     /// Bottom-floating pill over the CFG graph: switch tools without leaving the
@@ -1623,6 +1627,13 @@ struct DeveloperToolSheet: View {
                 if functionIndexState == .idle { Task { await loadFunctionIndex() } }
             } label: {
                 cfgToolbarIcon("list.bullet.indent")
+            }
+
+            Button {
+                showObjCBrowser = true
+                if functionIndexState == .idle { Task { await loadFunctionIndex() } }
+            } label: {
+                cfgToolbarIcon("curlybraces")
             }
 
             Button {
@@ -1675,6 +1686,20 @@ struct DeveloperToolSheet: View {
             guard seen.insert(insn.branchTarget).inserted else { continue }
             let label = insn.comment?.isEmpty == false ? insn.comment! : String(format: "0x%llx", insn.branchTarget)
             out.append((insn.branchTarget, label))
+        }
+        return out.sorted { $0.0 < $1.0 }
+    }
+
+    /// Calls in the current window that resolve to a real imported API — via
+    /// `importMap`, the LC_DYSYMTAB indirect-symbol-table lookup built once in
+    /// `loadFunctionIndex()` — rather than another function in this binary.
+    private var cfgImportedCalls: [(address: UInt64, name: String)] {
+        guard let instrs = cfgFunction?.instructions else { return [] }
+        var seen = Set<UInt64>()
+        var out: [(UInt64, String)] = []
+        for insn in instrs where insn.isCall && insn.branchTarget > 0 {
+            guard let name = importMap[insn.branchTarget], seen.insert(insn.branchTarget).inserted else { continue }
+            out.append((insn.branchTarget, name))
         }
         return out.sorted { $0.0 < $1.0 }
     }
@@ -1760,6 +1785,7 @@ struct DeveloperToolSheet: View {
         }
         let symbols = MachOTools.symbolMap(in: ctx.thin)
         symbolTable = symbols   // cached for class-name resolution (see `references(for:...)`) — not just function names
+        importMap = MachOTools.importStubMap(in: ctx.thin)   // real stub/symbol-pointer → imported-API-name map (see `calleesOf`)
         functionIndex = starts.map { addr in
             (address: addr, name: symbols[addr] ?? String(format: "sub_%llx", addr))
         }
@@ -1862,6 +1888,11 @@ struct DeveloperToolSheet: View {
             guard seenDirect.insert(insn.branchTarget).inserted else { continue }
             if let b = functionBounds(containing: insn.branchTarget), b.start == insn.branchTarget {
                 out.append((insn.branchTarget, b.name, .direct))
+            } else if let imported = importMap[insn.branchTarget] {
+                // A real imported API, resolved via LC_DYSYMTAB's indirect
+                // symbol table (see `MachOTools.importStubMap`) — not a guess,
+                // the same lookup `otool -I` does.
+                out.append((insn.branchTarget, imported, .imported))
             } else {
                 out.append((insn.branchTarget, String(format: "sub_%llx (unresolved target)", insn.branchTarget), .external))
             }
@@ -1879,7 +1910,7 @@ struct DeveloperToolSheet: View {
     // beyond the root is scanned until the user actually asks to see it.
 
     private func loadCallees(for node: CallGraphNode) async {
-        guard !node.calleesLoaded, node.depth < 3, node.kind != .indirect, node.kind != .external else { return }
+        guard !node.calleesLoaded, node.depth < 3, node.kind == .direct || node.kind == .root else { return }
         node.isLoadingCallees = true
         let items = await calleesOf(node.address)
         node.callees = items.map { CallGraphNode(address: $0.address, name: $0.name, kind: $0.kind, depth: node.depth + 1) }
@@ -1888,7 +1919,7 @@ struct DeveloperToolSheet: View {
     }
 
     private func loadCallers(for node: CallGraphNode) async {
-        guard !node.callersLoaded, node.depth < 3, node.kind != .indirect, node.kind != .external else { return }
+        guard !node.callersLoaded, node.depth < 3, node.kind == .direct || node.kind == .root else { return }
         node.isLoadingCallers = true
         let items = await scanCallers(of: node.address)
         node.callers = items.map {
@@ -1915,9 +1946,14 @@ struct DeveloperToolSheet: View {
     /// to open rather than guessing a destination.
     private func jumpCallGraph(to addr: UInt64, kind: CallGraphEdgeKind) {
         guard kind == .direct || kind == .root else {
-            cfgStatus = kind == .indirect
-                ? "This is an indirect call through a register — there's no static target to open."
-                : "This branch target isn't covered by this binary's LC_FUNCTION_STARTS, so there's no known function to open."
+            switch kind {
+            case .indirect:
+                cfgStatus = "This is an indirect call through a register — there's no static target to open."
+            case .imported:
+                cfgStatus = "This resolves to a real imported API, but its implementation lives outside this binary — there's no local function body to open."
+            default:
+                cfgStatus = "This branch target isn't covered by this binary's LC_FUNCTION_STARTS, so there's no known function to open."
+            }
             return
         }
         disasmVA = String(format: "0x%llx", addr)
@@ -2213,6 +2249,120 @@ struct DeveloperToolSheet: View {
         .preferredColorScheme(.dark)
     }
 
+    // MARK: Objective-C class & method browser
+    //
+    // Every entry here is a real -[Class selector:] / +[Class selector:]
+    // symbol straight from LC_SYMTAB — the standard mangling clang emits for
+    // every compiled method — cross-checked against LC_FUNCTION_STARTS so
+    // only a symbol that's ALSO confirmed as a real function entry point
+    // counts as "verified". No __objc_classlist / class_ro_t struct layout
+    // is parsed or guessed at. Picking a method here feeds the exact same
+    // pipeline as the Functions list or String Search: CFG, references,
+    // and the Call Graph all key off the same real address.
+
+    private var objcMethods: [(address: UInt64, cls: String, category: String?, isClassMethod: Bool, selector: String)] {
+        guard !symbolTable.isEmpty else { return [] }
+        var out: [(UInt64, String, String?, Bool, String)] = []
+        for (addr, name) in symbolTable {
+            guard name.hasPrefix("-[") || name.hasPrefix("+[") , name.hasSuffix("]") else { continue }
+            let isClassMethod = name.hasPrefix("+")
+            let inner = name.dropFirst(2).dropLast()
+            guard let spaceIdx = inner.firstIndex(of: " ") else { continue }
+            let clsPart = String(inner[inner.startIndex..<spaceIdx])
+            let selector = String(inner[inner.index(after: spaceIdx)...])
+            guard !clsPart.isEmpty, !selector.isEmpty else { continue }
+            var cls = clsPart
+            var category: String? = nil
+            if let parenOpen = clsPart.firstIndex(of: "("), clsPart.hasSuffix(")") {
+                cls = String(clsPart[clsPart.startIndex..<parenOpen])
+                category = String(clsPart[clsPart.index(after: parenOpen)..<clsPart.index(before: clsPart.endIndex)])
+            }
+            // "Verified" = LC_FUNCTION_STARTS independently confirms a real
+            // function begins at this exact address, not just metadata.
+            guard let b = functionBounds(containing: addr), b.start == addr else { continue }
+            out.append((addr, cls, category, isClassMethod, selector))
+        }
+        return out
+    }
+
+    private var objcClassGroups: [(cls: String, methods: [(address: UInt64, category: String?, isClassMethod: Bool, selector: String)])] {
+        let q = objcBrowserQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var grouped: [String: [(address: UInt64, category: String?, isClassMethod: Bool, selector: String)]] = [:]
+        for m in objcMethods {
+            if !q.isEmpty {
+                let display = "\(m.isClassMethod ? "+" : "-")[\(m.cls) \(m.selector)]".lowercased()
+                guard m.cls.lowercased().contains(q) || m.selector.lowercased().contains(q) || display.contains(q) else { continue }
+            }
+            grouped[m.cls, default: []].append((m.address, m.category, m.isClassMethod, m.selector))
+        }
+        return grouped.map { (cls: $0.key, methods: $0.value.sorted { $0.selector < $1.selector }) }.sorted { $0.cls < $1.cls }
+    }
+
+    private func pickObjCMethod(address: UInt64) {
+        disasmVA = String(format: "0x%llx", address)
+        cfgPicked = true
+        autoShowInfoOnLoad = true
+        cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []; cfgRefClasses = []
+        showObjCBrowser = false
+        Task { await openLocalCFG() }
+    }
+
+    private var objcBrowserSheet: some View {
+        NavigationStack {
+            Group {
+                if functionIndexState == .idle || functionIndexState == .loading {
+                    VStack(spacing: 10) {
+                        ProgressView().tint(blue)
+                        Text("Reading LC_FUNCTION_STARTS + LC_SYMTAB…").font(.caption).foregroundStyle(Theme.subtle)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if objcMethods.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "curlybraces").font(.largeTitle).foregroundStyle(Theme.subtle)
+                        Text("No verified Objective-C methods found.").font(.subheadline).foregroundStyle(Theme.text)
+                        Text("Either this binary's method symbols are stripped, or it's pure Swift/C with no -[Class selector:]-style LC_SYMTAB entries.")
+                            .font(.caption).foregroundStyle(Theme.subtle).multilineTextAlignment(.center).padding(.horizontal, 30)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        Section {
+                            ForEach(objcClassGroups, id: \.cls) { group in
+                                DisclosureGroup {
+                                    ForEach(group.methods, id: \.address) { m in
+                                        Button { pickObjCMethod(address: m.address) } label: {
+                                            HStack {
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text("\(m.isClassMethod ? "+" : "-")\(m.category.map { "(\($0)) " } ?? "")\(m.selector)")
+                                                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                                                    Text(String(format: "0x%llx", m.address)).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.subtle)
+                                                }
+                                                Spacer()
+                                                Image(systemName: "arrow.forward.circle").foregroundStyle(blue).font(.caption)
+                                            }
+                                        }
+                                    }
+                                } label: {
+                                    Text(group.cls).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
+                                }
+                            }
+                        } header: {
+                            Text("\(objcMethods.count) verified methods across \(objcClassGroups.count) classes")
+                        } footer: {
+                            Text("Each method is a real -[Class selector:]/+[Class selector:] LC_SYMTAB symbol confirmed as a real function entry by LC_FUNCTION_STARTS — not inferred from __objc_classlist/class_ro_t layout.")
+                        }.listRowBackground(Color(white: 0.08))
+                    }
+                    .scrollContentBackground(.hidden).background(Color.black)
+                    .searchable(text: $objcBrowserQuery, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search class or selector")
+                }
+            }
+            .background(Color.black)
+            .navigationTitle("Classes & Methods").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showObjCBrowser = false } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+
     // MARK: Function Info — a plain-English index of what this function connects to.
     // Every line here comes from real, already-decoded data: Capstone's instruction
     // counts, its own resolved string/class xrefs, the real callees it dials out to,
@@ -2287,6 +2437,23 @@ struct DeveloperToolSheet: View {
                         Text("Objective-C classes")
                     } footer: {
                         Text("From __objc_classrefs slots matched against this class's real _OBJC_CLASS_$_ symbol in LC_SYMTAB — only resolves classes actually defined in this binary, not ones it merely imports.")
+                    }.listRowBackground(Color(white: 0.08))
+
+                    Section {
+                        if cfgImportedCalls.isEmpty {
+                            Text("No calls into an external/imported API resolved in this function.").font(.caption).foregroundStyle(Theme.subtle)
+                        } else {
+                            ForEach(cfgImportedCalls, id: \.address) { entry in
+                                HStack {
+                                    Circle().fill(.purple).frame(width: 7, height: 7)
+                                    Text(entry.name).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Imported APIs called (\(cfgImportedCalls.count))")
+                    } footer: {
+                        Text("Resolved from LC_DYSYMTAB's indirect symbol table against each call's real branch target — the same mechanism otool -I uses, not a guess at what a stub does.")
                     }.listRowBackground(Color(white: 0.08))
 
                     Section {
@@ -2373,7 +2540,7 @@ struct DeveloperToolSheet: View {
                         } header: {
                             Text("Calls out to")
                         } footer: {
-                            Text("Green = resolves to another real function. Orange = a real branch target not covered by this binary's LC_FUNCTION_STARTS — usually an imported/stub symbol. Red = an indirect call through a register (blr), which has no static target to follow. Expand up to 3 levels out; tap a row to open its CFG.")
+                            Text("Green = resolves to another real function. Purple = a real imported API, resolved via LC_DYSYMTAB's indirect symbol table (otool -I's own mechanism). Orange = a branch target that's neither — not covered by LC_FUNCTION_STARTS nor a recognized stub. Red = an indirect call through a register (blr), with no static target at all. Expand up to 3 levels out; tap a row to open its CFG (imported/unresolved rows have nothing local to open).")
                         }.listRowBackground(Color(white: 0.08))
 
                         Section {
@@ -3060,6 +3227,7 @@ private struct CallGraphTree: View {
         switch kind {
         case .root: return .blue
         case .direct: return .green
+        case .imported: return .purple
         case .external: return .orange
         case .indirect: return .red
         }
