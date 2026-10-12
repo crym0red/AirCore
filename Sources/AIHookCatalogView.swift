@@ -1,6 +1,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
+
+#if canImport(FoundationModels)
 import FoundationModels
+#endif
 
 /// Local-only report scanner and hook-catalog matcher.
 /// The on-device Foundation Models API is used only when available; a deterministic
@@ -35,7 +38,7 @@ struct AIHookCatalogView: View {
     private static let fallbackCatalog: [CatalogEntry] = [
         .init(id: "objc-runtime", title: "Objective-C runtime inspection", triggers: ["objc_getclass", "class_getinstancemethod", "method_gettypeencoding", "selector", "__objc_classlist"], template: "Objective-C class/selector inventory and method-encoding diagnostics", notes: "Use verified class and selector metadata; do not infer argument types from selector spelling."),
         .init(id: "storekit-diagnostics", title: "StoreKit / entitlement diagnostics", triggers: ["storekit", "skpayment", "transaction", "entitlement", "subscription", "premium", "purchase"], template: "Purchase lifecycle and entitlement-state logging scaffold", notes: "Observe and report state transitions without changing entitlement results or granting access."),
-        .init(id: "trust-diagnostics", title: "TLS / trust diagnostics", triggers: ["trust", "certificate", "pinned", "pinning", "servertrust", "sec_trust"], template: "Trust-evaluation diagnostics scaffold", notes: "Record evaluation outcomes in an authorized test target; do not disable validation."),
+        .init(id: "trust-diagnostics", title: "TLS / certificate-pinning diagnostics", triggers: ["sectrustevaluatewitherror", "sectrustevaluate", "sectrustcopykey", "sectrustsetanchorcertificates", "nsurlauthenticationmethodservertrust", "urlsession:didreceivechallenge:", "servertrust", "certificatepinning", "pinnedcertificate", "publickeyhashes", "trustkit", "alamofire", "spki", "tls"], template: "Evidence-backed TLS trust-flow report and diagnostic logging scaffold", notes: "Trace the actual trust callback, certificate/public-key comparison, and failure branch. Keep validation behavior unchanged; use a test build or explicit test-only trust configuration for authorized proxy testing."),
         .init(id: "loaded-images", title: "Loaded-image diagnostics", triggers: ["_dyld_image_count", "dyld", "loaded image", "dlsym", "dlopen"], template: "Loaded-image enumeration and logging scaffold", notes: "Read-only runtime inventory for debugging and compatibility checks."),
         .init(id: "capture-diagnostics", title: "Screen-capture diagnostics", triggers: ["capturedidchangenotification", "screenshot", "uiscreen", "screen capture", "recording"], template: "Screen-capture state and notification logging scaffold", notes: "Observe capture state and notification delivery without suppressing application behavior."),
         .init(id: "objc-swizzle-forward", title: "Objective-C forwarding instrumentation", triggers: ["-[", "+[", "method_list_t", "method_setimplementation", "method_setimplementation"], template: "Log-and-forward swizzle scaffold for a verified Objective-C method", notes: "Requires a real method encoding and ABI-compatible signature. Preserve and call the original implementation."),
@@ -122,20 +125,28 @@ struct AIHookCatalogView: View {
     }
 
     private func updateModelStatus() async {
+        #if canImport(FoundationModels)
         if #available(iOS 26.0, *) {
             switch SystemLanguageModel.default.availability {
-            case .available: modelStatus = "Apple Foundation Models: available on this device"
-            case .unavailable(let reason): modelStatus = "On-device model unavailable (\(String(describing: reason))); deterministic matching remains available"
+            case .available:
+                modelStatus = "Apple Foundation Models: available on this device"
+            case .unavailable(let reason):
+                modelStatus = "On-device model unavailable (\(String(describing: reason))); deterministic matching remains available"
             }
         } else {
             modelStatus = "iOS 26+ required for Foundation Models; deterministic local matching remains available"
         }
+        #else
+        modelStatus = "FoundationModels unavailable in this build environment; deterministic local matching remains available"
+        #endif
     }
 
     private func isModelAvailable() -> Bool {
+        #if canImport(FoundationModels)
         if #available(iOS 26.0, *) {
             if case .available = SystemLanguageModel.default.availability { return true }
         }
+        #endif
         return false
     }
 
@@ -150,6 +161,7 @@ struct AIHookCatalogView: View {
         let prompt = """
         You are AirCore's local reverse-engineering report triage assistant. Use only evidence present in the report and the catalog below. Do not invent class names, selectors, method signatures, addresses, or type encodings. Distinguish direct evidence from inference. Recommend only diagnostic, logging, and original-behavior-preserving instrumentation templates; never suggest changing purchase/entitlement outcomes or disabling security checks. Output concise Markdown with sections: Confirmed evidence, Best catalog matches, Missing verification, and Safe next step.\n\nCATALOG MATCHES:\n\(deterministic)\n\nREPORT:\n\(String(reportText.prefix(26000)))
         """
+        #if canImport(FoundationModels)
         if isModelAvailable() {
             do {
                 let session = LanguageModelSession(instructions: "You analyze local iOS binary reports for AirCore. You cannot access network or files. Never fabricate evidence.")
@@ -164,5 +176,9 @@ struct AIHookCatalogView: View {
             resultText = "DETERMINISTIC MATCHING\n\n\(deterministic)"
             modelStatus = "Used local catalog matching; on-device Foundation Models unavailable."
         }
+        #else
+        resultText = "DETERMINISTIC MATCHING\n\n\(deterministic)"
+        modelStatus = "FoundationModels unavailable in this build environment; deterministic local matching used."
+        #endif
     }
 }
