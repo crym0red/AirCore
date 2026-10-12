@@ -213,27 +213,27 @@ struct OnboardingView: View {
                         .padding(.vertical, 8)
                         Divider().overlay(Color.white.opacity(0.14))
 
-                        HStack(alignment: .center, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("& even more…")
-                                    .font(.system(size: 19, weight: .bold))
-                                    .foregroundStyle(.white)
-                                Text("No account required to start signing.")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.white.opacity(0.55))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            Spacer(minLength: 4)
-                            Button(action: handleGetStarted) {
-                                Text("Continue")
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundStyle(.black)
-                                    .frame(width: 136, height: 48)
-                                    .background(Color(white: 0.95), in: Capsule())
-                            }
-                            .scaleEffect(buttonScale)
-                            .opacity(buttonOpacity)
+                        HStack(spacing: 6) {
+                            Text("& even more…")
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(.white)
+                            Text("No account required.")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.white.opacity(0.55))
                         }
+                        .lineLimit(1).minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 12)
+
+                        Button(action: handleGetStarted) {
+                            Text("Continue")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(.black)
+                                .frame(maxWidth: .infinity).frame(height: 52)
+                                .background(Color(white: 0.95), in: Capsule())
+                        }
+                        .scaleEffect(buttonScale)
+                        .opacity(buttonOpacity)
                         .padding(.top, 10)
                     }
                     .padding(.top, 8)

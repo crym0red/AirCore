@@ -423,7 +423,7 @@ struct ParticleBackground: View {
 }
 
 /// Living grid: lines bend away from / toward your finger, tap sends a ripple through it,
-/// intersections glow near the touch, and a soft scan band sweeps down on its own.
+/// intersections glow near the touch, 
 struct GridBackground: View {
     var accent: Color = Theme.accent
     var density: Double = 1
@@ -439,7 +439,6 @@ struct GridBackground: View {
                 let cols = Int(size.width / step) + 2, rows = Int(size.height / step) + 2
                 let tp = touch == .off ? nil : ParticleTouch.point
                 let pulse = touch == .off ? nil : ParticleTouch.pulse
-                let sweepY = size.height * CGFloat((t * 0.07 * speed).truncatingRemainder(dividingBy: 1.3)) - size.height * 0.15
 
                 var pts = [CGPoint](repeating: .zero, count: cols * rows)
                 var heat = [Double](repeating: 0, count: cols * rows)
@@ -450,9 +449,6 @@ struct GridBackground: View {
                         // ambient shimmer
                         x += CGFloat(sin(t * 0.6 * speed + Double(y) / 90) * 1.6)
                         y += CGFloat(cos(t * 0.5 * speed + Double(x) / 110) * 1.6)
-                        // sweeping band
-                        let sd = Double(y - sweepY) / 55
-                        h += 0.32 * exp(-sd * sd)
                         // finger
                         if let tp {
                             let dx = x - tp.x, dy = y - tp.y
@@ -522,5 +518,54 @@ struct ThemeBackgroundLayer: View {
         case .grid:      GridBackground(accent: theme.accent, density: theme.particleDensity, speed: theme.particleSpeed, touch: theme.particleTouch)
         case .none:      EmptyView()
         }
+    }
+}
+
+// MARK: - Touch probe (non-blocking)
+
+/// Watches touches app-wide through a passive recognizer on the window. It never cancels, delays or
+/// intercepts touches, so every button, scroll view and sheet keeps working normally.
+struct TouchProbe: UIViewRepresentable {
+    func makeUIView(context: Context) -> ProbeView { ProbeView() }
+    func updateUIView(_ uiView: ProbeView, context: Context) {}
+
+    final class ProbeView: UIView, UIGestureRecognizerDelegate {
+        private var installedOn: UIWindow?
+        private var start: CGPoint = .zero
+
+        override init(frame: CGRect) { super.init(frame: frame); isUserInteractionEnabled = false; backgroundColor = .clear }
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard let w = window, installedOn !== w else { return }
+            installedOn = w
+            let g = UILongPressGestureRecognizer(target: self, action: #selector(handle(_:)))
+            g.minimumPressDuration = 0
+            g.allowableMovement = .greatestFiniteMagnitude
+            g.cancelsTouchesInView = false
+            g.delaysTouchesBegan = false
+            g.delaysTouchesEnded = false
+            g.delegate = self
+            w.addGestureRecognizer(g)
+        }
+
+        @objc private func handle(_ g: UILongPressGestureRecognizer) {
+            let p = g.location(in: nil)
+            switch g.state {
+            case .began: start = p; ParticleTouch.point = p
+            case .changed: ParticleTouch.point = p
+            case .ended, .cancelled, .failed:
+                ParticleTouch.point = nil
+                if g.state == .ended, abs(p.x - start.x) < 10, abs(p.y - start.y) < 10 {
+                    ParticleTouch.pulse = (p, Date.timeIntervalSinceReferenceDate)
+                }
+            default: break
+            }
+        }
+
+        func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith o: UIGestureRecognizer) -> Bool { true }
+        func gestureRecognizer(_ g: UIGestureRecognizer, shouldRequireFailureOf o: UIGestureRecognizer) -> Bool { false }
+        func gestureRecognizer(_ g: UIGestureRecognizer, shouldBeRequiredToFailBy o: UIGestureRecognizer) -> Bool { false }
     }
 }
