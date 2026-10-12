@@ -2869,10 +2869,7 @@ struct DeveloperToolSheet: View {
             let tmpDir = FileManager.default.temporaryDirectory
             let zipURL = tmpDir.appendingPathComponent("ClassHeaders.zip")
             try? FileManager.default.removeItem(at: zipURL)
-            guard let archive = Archive(url: zipURL, accessMode: .create) else {
-                cfgStatus = "Could not create the headers zip."
-                return
-            }
+            let archive = try Archive(url: zipURL, accessMode: .create)
             for (path, data) in files {
                 try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) { position, size in
                     data.subdata(in: Int(position) ..< Int(position) + size)
@@ -3147,10 +3144,7 @@ struct DeveloperToolSheet: View {
             let tmpDir = FileManager.default.temporaryDirectory
             let zipURL = tmpDir.appendingPathComponent("GeneratedSwizzleDylib.zip")
             try? FileManager.default.removeItem(at: zipURL)
-            guard let archive = Archive(url: zipURL, accessMode: .create) else {
-                cfgStatus = "Could not create the dylib project zip."
-                return
-            }
+            let archive = try Archive(url: zipURL, accessMode: .create)
             let files: [(String, Data)] = [
                 ("GeneratedSwizzle.m", Data(source.utf8)),
                 ("Makefile", Data(makefile.utf8)),
@@ -3958,14 +3952,16 @@ struct DeveloperToolSheet: View {
     private func batchPatchPreviewSheet(_ b: BatchPatchPreview) -> some View {
         NavigationStack {
             List {
-                Section(b.title) {
-                    ForEach(b.items) { p in
+                Section {
+                    ForEach(b.items) { (p: PatchPreview) in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(String(format: "0x%llx", p.va)).font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
                             Text("was: \(p.originalText)  [\(hex(p.originalBytes))]").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.subtle).lineLimit(1)
                             Text("new: \(p.newText)  [\(hex(p.newBytes))]").font(.system(size: 10, design: .monospaced)).foregroundStyle(.orange).lineLimit(1)
                         }
                     }
+                } header: {
+                    Text(b.title)
                 } footer: {
                     Text("Each row is the exact real instruction currently at that file offset, and the exact 4 bytes that would overwrite it. NOPing a call site that feeds its return value into later code can misbehave — review before queuing.")
                 }.listRowBackground(Color(white: 0.08))
@@ -3989,43 +3985,57 @@ struct DeveloperToolSheet: View {
     private var patchPreviewSheet: some View {
         Group {
             if let p = patchPreview {
-                NavigationStack {
-                    List {
-                        Section("Address") {
-                            Text(String(format: "0x%llx", p.va)).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
-                            Text("File offset \(p.fileOffset) (0x\(String(p.fileOffset, radix: 16)))").font(.caption).foregroundStyle(Theme.subtle)
-                        }.listRowBackground(Color(white: 0.08))
-
-                        Section("Original instruction — real bytes currently on disk") {
-                            Text(p.originalText).font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.text)
-                            Text(hex(p.originalBytes)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
-                        }.listRowBackground(Color(white: 0.08))
-
-                        Section("Proposed replacement") {
-                            Text(p.newText).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(.orange)
-                            Text(hex(p.newBytes)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
-                        } footer: {
-                            Text("Queuing writes these exact 4 bytes over the original at the file offset above. The patch doesn't touch the binary until you sign — you can still remove it from the Pending patches list before then.")
-                        }.listRowBackground(Color(white: 0.08))
-
-                        Section {
-                            Button(role: .destructive) { patchPreview = nil } label: {
-                                Label("Cancel", systemImage: "xmark")
-                            }
-                            Button { commitPatch(p) } label: {
-                                Label("Queue Patch", systemImage: "checkmark.seal")
-                            }.foregroundStyle(blue)
-                        }.listRowBackground(Color(white: 0.08))
-                    }
-                    .scrollContentBackground(.hidden).background(Color.black)
-                    .navigationTitle("Verify Patch").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { patchPreview = nil } } }
-                }
-                .preferredColorScheme(.dark)
+                patchPreviewDetail(p)
             } else {
                 EmptyView()
             }
         }
+    }
+
+    /// Split out of `patchPreviewSheet` so the view-builder expression stays
+    /// small enough for the type checker — a single giant `NavigationStack`
+    /// with four inline `Section`s here previously caused "unable to
+    /// type-check this expression in reasonable time" in CI.
+    private func patchPreviewDetail(_ p: PatchPreview) -> some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text(String(format: "0x%llx", p.va)).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
+                    Text("File offset \(p.fileOffset) (0x\(String(p.fileOffset, radix: 16)))").font(.caption).foregroundStyle(Theme.subtle)
+                } header: {
+                    Text("Address")
+                }.listRowBackground(Color(white: 0.08))
+
+                Section {
+                    Text(p.originalText).font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.text)
+                    Text(hex(p.originalBytes)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
+                } header: {
+                    Text("Original instruction — real bytes currently on disk")
+                }.listRowBackground(Color(white: 0.08))
+
+                Section {
+                    Text(p.newText).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(.orange)
+                    Text(hex(p.newBytes)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
+                } header: {
+                    Text("Proposed replacement")
+                } footer: {
+                    Text("Queuing writes these exact 4 bytes over the original at the file offset above. The patch doesn't touch the binary until you sign — you can still remove it from the Pending patches list before then.")
+                }.listRowBackground(Color(white: 0.08))
+
+                Section {
+                    Button(role: .destructive) { patchPreview = nil } label: {
+                        Label("Cancel", systemImage: "xmark")
+                    }
+                    Button { commitPatch(p) } label: {
+                        Label("Queue Patch", systemImage: "checkmark.seal")
+                    }.foregroundStyle(blue)
+                }.listRowBackground(Color(white: 0.08))
+            }
+            .scrollContentBackground(.hidden).background(Color.black)
+            .navigationTitle("Verify Patch").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { patchPreview = nil } } }
+        }
+        .preferredColorScheme(.dark)
     }
 }
 

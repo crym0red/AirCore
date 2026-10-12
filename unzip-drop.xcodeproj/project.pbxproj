@@ -23,8 +23,30 @@
 		115CB1AE83B2B9BBFB0A9A95 /* unzip-drop.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "unzip-drop.entitlements"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		CA75707E000000000000001C /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"Capstone/arch/AArch64/AArch64GenAsmWriter.inc",
+				"Capstone/arch/AArch64/AArch64GenCSAliasMnemMap.inc",
+				"Capstone/arch/AArch64/AArch64GenCSFeatureName.inc",
+				"Capstone/arch/AArch64/AArch64GenCSMappingInsn.inc",
+				"Capstone/arch/AArch64/AArch64GenCSMappingInsnName.inc",
+				"Capstone/arch/AArch64/AArch64GenCSMappingInsnOp.inc",
+				"Capstone/arch/AArch64/AArch64GenCSOpGroup.inc",
+				"Capstone/arch/AArch64/AArch64GenDisassemblerTables.inc",
+				"Capstone/arch/AArch64/AArch64GenInstrInfo.inc",
+				"Capstone/arch/AArch64/AArch64GenRegisterInfo.inc",
+				"Capstone/arch/AArch64/AArch64GenSubtargetInfo.inc",
+				"Capstone/arch/AArch64/AArch64GenSystemOperands.inc",
+				"Capstone/arch/AArch64/AArch64GenSystemRegister.inc",
+			);
+			target = 7161E63E34B4EFFA56B6844D /* unzip-drop */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		CF0E7EE12920CA355A866327 /* Sources */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources; sourceTree = "<group>"; };
+		CF0E7EE12920CA355A866327 /* Sources */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources; sourceTree = "<group>"; exceptions = (CA75707E000000000000001C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
