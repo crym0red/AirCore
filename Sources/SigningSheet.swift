@@ -1381,6 +1381,8 @@ struct DeveloperToolSheet: View {
     @State private var showAnalysisCenter = false
     @State private var cfgFunction: UCFunction?
     @State private var cfgStatus: String?
+    @State private var showCFGFind = false
+    @State private var cfgFindQuery = ""
 
     private var blue: Color { Theme.accent }
 
@@ -1397,21 +1399,30 @@ struct DeveloperToolSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                switch mode {
-                case .strings:        stringsView
-                case .patchFunctions: patchView
-                case .dependencies:   dependenciesView
-                case .disassemble:    disassembleView
-                case .analysis:       BinaryAnalysisView(ipaURL: ipaURL)
-                case .injectData:     injectDataView
-                case .cfgViewer:      cfgDirectView
+        Group {
+            if mode == .cfgViewer {
+                // UCDisasmViewController brings its own UINavigationController with a title
+                // bar + Done/Share buttons already, so this mode skips the SwiftUI nav chrome
+                // entirely instead of stacking a second bar on top of it.
+                cfgDirectView
+            } else {
+                NavigationStack {
+                    Group {
+                        switch mode {
+                        case .strings:        stringsView
+                        case .patchFunctions: patchView
+                        case .dependencies:   dependenciesView
+                        case .disassemble:    disassembleView
+                        case .analysis:       BinaryAnalysisView(ipaURL: ipaURL)
+                        case .injectData:     injectDataView
+                        case .cfgViewer:      EmptyView()   // handled above
+                        }
+                    }
+                    .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+                    .modifier(StringSearchable(mode: mode, text: $query))
                 }
             }
-            .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
-            .modifier(StringSearchable(mode: mode, text: $query))
         }
         .preferredColorScheme(.dark)
         .task {
@@ -1474,14 +1485,141 @@ struct DeveloperToolSheet: View {
     @ViewBuilder
     private var cfgDirectView: some View {
         if let cfgFunction {
-            CFGViewerController(function: cfgFunction).ignoresSafeArea()
-        } else {
-            VStack(spacing: 10) {
-                ProgressView().tint(blue)
-                Text(cfgStatus ?? "Loading ARM64 text with Capstone…").font(.caption).foregroundStyle(Theme.subtle)
+            ZStack(alignment: .bottom) {
+                CFGViewerController(function: cfgFunction).ignoresSafeArea()
+                cfgFloatingToolbar
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)
+            .sheet(isPresented: $showCFGFind) { cfgFindSheet }
+        } else {
+            ZStack(alignment: .topTrailing) {
+                VStack(spacing: 10) {
+                    ProgressView().tint(blue)
+                    Text(cfgStatus ?? "Loading ARM64 text with Capstone…").font(.caption).foregroundStyle(Theme.subtle)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)
+
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 26))
+                        .foregroundStyle(.white.opacity(0.75), Color.black.opacity(0.4))
+                }
+                .padding(16)
+            }
+            .ignoresSafeArea()
         }
+    }
+
+    /// Bottom-floating pill over the CFG graph: switch tools without leaving the
+    /// viewer, and jump straight to an address or a resolved call target.
+    private var cfgFloatingToolbar: some View {
+        HStack(spacing: 22) {
+            Menu {
+                Button { showDisassemblerBrowser = true } label: {
+                    Label("Disassembler Browser", systemImage: "list.bullet.rectangle")
+                }
+                Button { showPseudocodeViewer = true } label: {
+                    Label("Pseudocode", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                Button { showAnalysisCenter = true } label: {
+                    Label("Analysis Center", systemImage: "square.grid.3x3")
+                }
+            } label: {
+                cfgToolbarIcon("square.grid.2x2")
+            }
+
+            Button { showCFGFind = true } label: {
+                cfgToolbarIcon("magnifyingglass")
+            }
+
+            Button { dismiss() } label: {
+                cfgToolbarIcon("xmark")
+            }
+        }
+        .padding(.horizontal, 20).padding(.vertical, 12)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
+        .padding(.bottom, 18)
+    }
+
+    private func cfgToolbarIcon(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 26, height: 26)
+    }
+
+    /// Resolved call targets in the current window (real Capstone bl/branch data,
+    /// deduped by address) plus a raw "jump to address" fallback.
+    private var cfgCallTargets: [(address: UInt64, label: String)] {
+        guard let instrs = cfgFunction?.instructions else { return [] }
+        var seen = Set<UInt64>()
+        var out: [(UInt64, String)] = []
+        for insn in instrs where insn.isCall && insn.branchTarget > 0 {
+            guard seen.insert(insn.branchTarget).inserted else { continue }
+            let label = insn.comment?.isEmpty == false ? insn.comment! : String(format: "0x%llx", insn.branchTarget)
+            out.append((insn.branchTarget, label))
+        }
+        return out.sorted { $0.0 < $1.0 }
+    }
+
+    private var cfgFindResults: [(address: UInt64, label: String)] {
+        let q = cfgFindQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return cfgCallTargets }
+        return cfgCallTargets.filter {
+            $0.label.lowercased().contains(q) || String(format: "%llx", $0.address).contains(q)
+        }
+    }
+
+    private var cfgFindSheet: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack {
+                        TextField("Address or symbol, e.g. 0x1000074a0", text: $cfgFindQuery)
+                            .font(.system(size: 13, design: .monospaced)).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Button("Jump") { jumpToCFGFindEntry() }.foregroundStyle(blue)
+                    }
+                }.listRowBackground(Color(white: 0.08))
+                Section {
+                    if cfgFindResults.isEmpty {
+                        Text("No resolved call targets match yet. Enter a VA above and tap Jump to re-center the CFG there.")
+                            .font(.caption).foregroundStyle(Theme.subtle)
+                    } else {
+                        ForEach(cfgFindResults, id: \.address) { entry in
+                            Button {
+                                cfgFindQuery = String(format: "0x%llx", entry.address)
+                                jumpToCFGFindEntry()
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.label).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
+                                        Text(String(format: "0x%llx", entry.address)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "arrow.forward.circle").foregroundStyle(blue)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Call targets in this window (\(cfgCallTargets.count))")
+                }.listRowBackground(Color(white: 0.08))
+            }
+            .scrollContentBackground(.hidden).background(Color.black)
+            .navigationTitle("Find").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showCFGFind = false } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func jumpToCFGFindEntry() {
+        let raw = cfgFindQuery.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "0x", with: "")
+        guard !raw.isEmpty, UInt64(raw, radix: 16) != nil else { return }
+        disasmVA = "0x\(raw)"
+        showCFGFind = false
+        cfgFunction = nil
+        Task { await openLocalCFG() }
     }
 
     // MARK: Strings
