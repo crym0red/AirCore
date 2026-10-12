@@ -1402,7 +1402,39 @@ struct DeveloperToolSheet: View {
     @State private var stringIndexState: FunctionIndexState = .idle
     @State private var stringIndexProgress: Double = 0
     @State private var patchPreview: PatchPreview?
+    @State private var showCallGraph = false
+    @State private var callGraphRoot: CallGraphNode?
     enum FunctionIndexState: Equatable { case idle, loading, ready, empty }
+
+    /// What kind of edge a call-graph node was reached by — drives both its
+    /// color and whether it can be expanded further. `.direct` is a resolved
+    /// `bl` into another real function; `.external` is a real, non-zero branch
+    /// target that isn't covered by this binary's own LC_FUNCTION_STARTS
+    /// (typically an imported/stub symbol); `.indirect` is a `blr` through a
+    /// register, which has no static target at all.
+    enum CallGraphEdgeKind { case root, direct, external, indirect }
+    enum CallGraphDirection { case callees, callers }
+
+    /// One node in the interactive call graph. A reference type (not a
+    /// `@State` value) on purpose: nodes are lazily, asynchronously filled in
+    /// as the user expands them, and a class lets each row own its own
+    /// loaded/loading flags without the whole tree re-rendering from the root.
+    final class CallGraphNode: ObservableObject, Identifiable {
+        let id = UUID()
+        let address: UInt64
+        let name: String
+        let kind: CallGraphEdgeKind
+        let depth: Int
+        @Published var callees: [CallGraphNode] = []
+        @Published var callers: [CallGraphNode] = []
+        @Published var calleesLoaded = false
+        @Published var callersLoaded = false
+        @Published var isLoadingCallees = false
+        @Published var isLoadingCallers = false
+        init(address: UInt64, name: String, kind: CallGraphEdgeKind, depth: Int) {
+            self.address = address; self.name = name; self.kind = kind; self.depth = depth
+        }
+    }
 
     /// What a NOP/RET patch would actually do, shown before it's queued: the
     /// real original instruction (decoded fresh from the real bytes at that
@@ -1565,6 +1597,7 @@ struct DeveloperToolSheet: View {
         }
         .sheet(isPresented: $showFunctionInfo) { functionInfoSheet }
         .sheet(isPresented: $showStringIndex) { stringIndexSheet }
+        .sheet(isPresented: $showCallGraph) { callGraphSheet }
     }
 
     /// Bottom-floating pill over the CFG graph: switch tools without leaving the
@@ -1597,6 +1630,10 @@ struct DeveloperToolSheet: View {
                 if cfgCallersState == .idle, let f = cfgFunction { Task { await loadCallers(of: f.startAddress) } }
             } label: {
                 cfgToolbarIcon("info.circle")
+            }
+
+            Button { openCallGraph() } label: {
+                cfgToolbarIcon("point.3.connected.trianglepath.dotted")
             }
 
             Button { showCFGFind = true } label: {
@@ -1751,13 +1788,16 @@ struct DeveloperToolSheet: View {
     /// signed, word-scaled 26-bit branch immediate directly from the raw machine
     /// code. Not inferred from any single function's Capstone window — every hit
     /// here is an actual `bl` encoded in the binary that resolves to this address.
-    private func loadCallers(of target: UInt64) async {
-        cfgCallersState = .loading
+    /// Real callers of `target` — found by scanning __TEXT,__text for ARM64 `BL`
+    /// instructions (opcode bits [31:26] == 0b100101) and decoding each one's
+    /// signed, word-scaled 26-bit branch immediate directly from the raw machine
+    /// code. Not inferred from any single function's Capstone window — every hit
+    /// here is an actual `bl` encoded in the binary that resolves to this address.
+    /// Pulled out as a pure function (no state writes) so both the Function Info
+    /// screen and the per-node Call Graph lookups can share it.
+    private func scanCallers(of target: UInt64) async -> [(address: UInt64, name: String, count: Int)] {
         guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil),
-              let text = MachOTools.textSection(ctx.sections, in: ctx.thin) else {
-            cfgCallersState = .empty
-            return
-        }
+              let text = MachOTools.textSection(ctx.sections, in: ctx.thin) else { return [] }
         let data = text.data
         let base = text.vmaddr
         var hitAddrs: [UInt64] = []
@@ -1781,10 +1821,111 @@ struct DeveloperToolSheet: View {
             let prior = byFunction[b.start] ?? (b.name, 0)
             byFunction[b.start] = (prior.name, prior.count + 1)
         }
-        cfgCallers = byFunction.map { start, v in
-            (address: start, name: v.count > 1 ? "\(v.name) (\(v.count)×)" : v.name)
-        }.sorted { $0.address < $1.address }
+        return byFunction.map { start, v in (address: start, name: v.name, count: v.count) }.sorted { $0.address < $1.address }
+    }
+
+    private func loadCallers(of target: UInt64) async {
+        cfgCallersState = .loading
+        let results = await scanCallers(of: target)
+        cfgCallers = results.map { (address: $0.address, name: $0.count > 1 ? "\($0.name) (\($0.count)×)" : $0.name) }
         cfgCallersState = cfgCallers.isEmpty ? .empty : .ready
+    }
+
+    /// Real direct callees of the function starting at (or containing) `addr` —
+    /// found the same way the CFG viewer decodes any function: a bounded
+    /// Capstone decode of that function's own real LC_FUNCTION_STARTS window.
+    /// Each call instruction is classified by what its target actually is:
+    /// `.direct` when the branch target lands exactly on another known
+    /// function's real start address; `.external` when it's a real, non-zero
+    /// branch target that doesn't match any LC_FUNCTION_STARTS entry (typically
+    /// a stub/trampoline for a symbol imported from outside this binary); and
+    /// `.indirect` when there's no static target at all (`blr` through a
+    /// register) — nothing about that target is guessed, it's just reported as
+    /// unresolvable, which is the honest answer.
+    private func calleesOf(_ addr: UInt64) async -> [(address: UInt64, name: String, kind: CallGraphEdgeKind)] {
+        guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil),
+              let text = MachOTools.textSection(ctx.sections, in: ctx.thin),
+              let bounds = functionBounds(containing: addr) else { return [] }
+        let delta = Int(bounds.start - text.vmaddr)
+        guard delta >= 0, delta < text.data.count else { return [] }
+        let cap = min(Int(bounds.end - bounds.start), max(0, text.data.count - delta))
+        guard cap >= 4 else { return [] }
+        let window = text.data.subdata(in: delta ..< delta + cap)
+        guard let result = UCDisassembler.sharedInstance().disassembleData(window, baseAddress: bounds.start) else { return [] }
+        var seenDirect = Set<UInt64>()
+        var out: [(UInt64, String, CallGraphEdgeKind)] = []
+        for insn in result.instructions where insn.isCall {
+            if insn.branchTarget == 0 {
+                out.append((insn.address, "indirect call (\(insn.mnemonic)) @ 0x\(String(insn.address, radix: 16))", .indirect))
+                continue
+            }
+            guard seenDirect.insert(insn.branchTarget).inserted else { continue }
+            if let b = functionBounds(containing: insn.branchTarget), b.start == insn.branchTarget {
+                out.append((insn.branchTarget, b.name, .direct))
+            } else {
+                out.append((insn.branchTarget, String(format: "sub_%llx (unresolved target)", insn.branchTarget), .external))
+            }
+        }
+        return out
+    }
+
+    // MARK: Interactive call graph
+    //
+    // Reuses `scanCallers`/`calleesOf` — both already real, already-built data
+    // sources — to let the user expand outward from any function, in either
+    // direction, up to 3 levels deep. Tapping a resolved node's row jumps the
+    // CFG viewer straight to it; the expand chevron (separate gesture target)
+    // lazily loads that node's own callers/callees on first open, so nothing
+    // beyond the root is scanned until the user actually asks to see it.
+
+    private func loadCallees(for node: CallGraphNode) async {
+        guard !node.calleesLoaded, node.depth < 3, node.kind != .indirect, node.kind != .external else { return }
+        node.isLoadingCallees = true
+        let items = await calleesOf(node.address)
+        node.callees = items.map { CallGraphNode(address: $0.address, name: $0.name, kind: $0.kind, depth: node.depth + 1) }
+        node.calleesLoaded = true
+        node.isLoadingCallees = false
+    }
+
+    private func loadCallers(for node: CallGraphNode) async {
+        guard !node.callersLoaded, node.depth < 3, node.kind != .indirect, node.kind != .external else { return }
+        node.isLoadingCallers = true
+        let items = await scanCallers(of: node.address)
+        node.callers = items.map {
+            CallGraphNode(address: $0.address, name: $0.count > 1 ? "\($0.name) (\($0.count)×)" : $0.name, kind: .direct, depth: node.depth + 1)
+        }
+        node.callersLoaded = true
+        node.isLoadingCallers = false
+    }
+
+    private func openCallGraph() {
+        guard let fn = cfgFunction else { return }
+        let node = CallGraphNode(address: fn.startAddress, name: fn.name, kind: .root, depth: 0)
+        callGraphRoot = node
+        showCallGraph = true
+        Task {
+            await loadCallees(for: node)
+            await loadCallers(for: node)
+        }
+    }
+
+    /// Jumps the CFG viewer to a call-graph node the user tapped. Only
+    /// `.direct`/`.root` nodes carry a real function address to jump to —
+    /// `.external`/`.indirect` nodes are reported honestly as having nothing
+    /// to open rather than guessing a destination.
+    private func jumpCallGraph(to addr: UInt64, kind: CallGraphEdgeKind) {
+        guard kind == .direct || kind == .root else {
+            cfgStatus = kind == .indirect
+                ? "This is an indirect call through a register — there's no static target to open."
+                : "This branch target isn't covered by this binary's LC_FUNCTION_STARTS, so there's no known function to open."
+            return
+        }
+        disasmVA = String(format: "0x%llx", addr)
+        cfgPicked = true
+        autoShowInfoOnLoad = false
+        showCallGraph = false
+        cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []; cfgRefClasses = []
+        Task { await openLocalCFG() }
     }
 
     // MARK: Static reference resolution (strings + ObjC selectors)
@@ -2209,6 +2350,57 @@ struct DeveloperToolSheet: View {
                 Image(systemName: "arrow.forward.circle").foregroundStyle(blue)
             }
         }
+    }
+
+    // MARK: Interactive call graph — the view
+
+    private var callGraphSheet: some View {
+        NavigationStack {
+            Group {
+                if let root = callGraphRoot {
+                    List {
+                        Section {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(root.name).font(.system(size: 15, weight: .bold, design: .monospaced)).foregroundStyle(Theme.text)
+                                Text(String(format: "0x%llx", root.address)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
+                            }
+                        }.listRowBackground(Color(white: 0.08))
+
+                        Section {
+                            CallGraphTree(node: root, direction: .callees, blue: blue,
+                                          onExpand: { n in Task { await loadCallees(for: n) } },
+                                          onJump: { addr, kind in jumpCallGraph(to: addr, kind: kind) })
+                        } header: {
+                            Text("Calls out to")
+                        } footer: {
+                            Text("Green = resolves to another real function. Orange = a real branch target not covered by this binary's LC_FUNCTION_STARTS — usually an imported/stub symbol. Red = an indirect call through a register (blr), which has no static target to follow. Expand up to 3 levels out; tap a row to open its CFG.")
+                        }.listRowBackground(Color(white: 0.08))
+
+                        Section {
+                            CallGraphTree(node: root, direction: .callers, blue: blue,
+                                          onExpand: { n in Task { await loadCallers(for: n) } },
+                                          onJump: { addr, kind in jumpCallGraph(to: addr, kind: kind) })
+                        } header: {
+                            Text("Called from")
+                        } footer: {
+                            Text("Every real `bl` in __text that resolves to each node's address — scanned fresh per node, not limited to one function's own window.")
+                        }.listRowBackground(Color(white: 0.08))
+                    }
+                    .scrollContentBackground(.hidden).background(Color.black)
+                } else {
+                    VStack(spacing: 8) {
+                        ProgressView().tint(blue)
+                        Text("Building call graph…").font(.caption).foregroundStyle(Theme.subtle)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black)
+                }
+            }
+            .background(Color.black)
+            .navigationTitle("Call Graph").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showCallGraph = false } } }
+        }
+        .preferredColorScheme(.dark)
     }
 
     // MARK: Strings
@@ -2796,6 +2988,82 @@ private struct CFGViewerController: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UINavigationController, context: Context) {}
+}
+
+/// One expandable row of the interactive call graph, recursing into its own
+/// children (depth-capped at 3) for whichever direction — callees or callers
+/// — it was placed in. The row's label is a plain `Button` (tap → jump to
+/// that function's CFG); the disclosure chevron is a separate gesture target
+/// that lazily triggers the real scan for this node's own children the first
+/// time it's opened, so nothing past the root is computed until asked for.
+private struct CallGraphTree: View {
+    @ObservedObject var node: DeveloperToolSheet.CallGraphNode
+    let direction: DeveloperToolSheet.CallGraphDirection
+    let blue: Color
+    let onExpand: (DeveloperToolSheet.CallGraphNode) -> Void
+    let onJump: (UInt64, DeveloperToolSheet.CallGraphEdgeKind) -> Void
+
+    @State private var expanded = false
+
+    private var children: [DeveloperToolSheet.CallGraphNode] { direction == .callees ? node.callees : node.callers }
+    private var loaded: Bool { direction == .callees ? node.calleesLoaded : node.callersLoaded }
+    private var loading: Bool { direction == .callees ? node.isLoadingCallees : node.isLoadingCallers }
+    private var canExpand: Bool { node.depth < 3 && (node.kind == .direct || node.kind == .root) }
+
+    var body: some View {
+        if node.depth == 0 || canExpand {
+            DisclosureGroup(isExpanded: Binding(
+                get: { expanded || node.depth == 0 },
+                set: { newValue in
+                    expanded = newValue
+                    if newValue, !loaded, !loading { onExpand(node) }
+                }
+            )) {
+                if loading {
+                    HStack { ProgressView().tint(blue); Text("Scanning real \(direction == .callees ? "callees" : "callers")…").font(.caption).foregroundStyle(Theme.subtle) }
+                } else if loaded && children.isEmpty {
+                    Text(direction == .callees ? "Calls nothing further in this window." : "Nothing in-module calls this directly.")
+                        .font(.caption).foregroundStyle(Theme.subtle)
+                } else {
+                    ForEach(children) { child in
+                        CallGraphTree(node: child, direction: direction, blue: blue, onExpand: onExpand, onJump: onJump)
+                    }
+                }
+            } label: {
+                row
+            }
+        } else {
+            row
+        }
+    }
+
+    private var row: some View {
+        Button { onJump(node.address, node.kind) } label: {
+            HStack(spacing: 8) {
+                Circle().fill(color(for: node.kind)).frame(width: 7, height: 7)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(node.name)
+                        .font(.system(size: 12, weight: node.depth == 0 ? .bold : .regular, design: .monospaced))
+                        .foregroundStyle(Theme.text).lineLimit(1)
+                    Text(String(format: "0x%llx", node.address)).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.subtle)
+                }
+                Spacer()
+                if node.kind == .direct || node.kind == .root {
+                    Image(systemName: "arrow.forward.circle").foregroundStyle(blue).font(.caption)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func color(for kind: DeveloperToolSheet.CallGraphEdgeKind) -> Color {
+        switch kind {
+        case .root: return .blue
+        case .direct: return .green
+        case .external: return .orange
+        case .indirect: return .red
+        }
+    }
 }
 
 private struct AnalysisCenterController: UIViewControllerRepresentable {
