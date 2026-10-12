@@ -233,7 +233,33 @@ struct SigningSheet: View {
                 entitlementTypeHints.removeValue(forKey: removedKey)
             }
         }
-        .sheet(isPresented: $showDeveloperTool) {
+        // CFG mode brings its own full-screen UIKit nav bar (UCDisasmViewController)
+        // with no SwiftUI chrome around it — presenting that through `.sheet` left
+        // this screen's own nav bar peeking above it and clipped its trailing
+        // buttons, same issue as the inner CFG-related sheets fixed elsewhere.
+        // `.fullScreenCover` for that one mode only; every other mode keeps its
+        // normal dismissible card via `.sheet`.
+        .fullScreenCover(isPresented: Binding(
+            get: { showDeveloperTool && developerToolMode == .cfgViewer },
+            set: { if !$0 { showDeveloperTool = false } }
+        )) {
+            DeveloperToolSheet(
+                mode: developerToolMode,
+                ipaURL: ipaURL,
+                appName: meta.name,
+                appBundleID: meta.bundleID,
+                macho: macho,
+                machoError: machoError,
+                patches: $binaryPatches,
+                injectBlob: $injectDataBlob,
+                injectName: $injectDataName,
+                stageDylib: { url in dylibs.append(DylibItem(url: url)); showDeveloperTool = false }
+            )
+        }
+        .sheet(isPresented: Binding(
+            get: { showDeveloperTool && developerToolMode != .cfgViewer },
+            set: { if !$0 { showDeveloperTool = false } }
+        )) {
             DeveloperToolSheet(
                 mode: developerToolMode,
                 ipaURL: ipaURL,
@@ -1652,91 +1678,110 @@ struct DeveloperToolSheet: View {
         .sheet(isPresented: $showManifest) { manifestSheet }
     }
 
-    /// Bottom-floating pill over the CFG graph: switch tools without leaving the
-    /// viewer, and jump straight to an address or a resolved call target.
+    /// Bottom-floating panel over the CFG graph: switch tools without leaving
+    /// the viewer, and jump straight to an address or a resolved call target.
+    /// Two slim rows of icon-over-label buttons, each evenly filling its row's
+    /// width — not a single crowded icon-only pill — so nothing overlaps or
+    /// gets squeezed off the edge on a phone-width screen.
     private var cfgFloatingToolbar: some View {
-        HStack(spacing: 22) {
-            Menu {
-                Button { showDisassemblerBrowser = true } label: {
-                    Label("Disassembler Browser", systemImage: "list.bullet.rectangle")
+        VStack(spacing: 6) {
+            HStack(spacing: 0) {
+                Menu {
+                    Button { showDisassemblerBrowser = true } label: {
+                        Label("Disassembler Browser", systemImage: "list.bullet.rectangle")
+                    }
+                    Button { showPseudocodeViewer = true } label: {
+                        Label("Pseudocode", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                    Button { showAnalysisCenter = true } label: {
+                        Label("Analysis Center", systemImage: "square.grid.3x3")
+                    }
+                } label: {
+                    cfgToolbarItem("square.grid.2x2", "More")
                 }
-                Button { showPseudocodeViewer = true } label: {
-                    Label("Pseudocode", systemImage: "chevron.left.forwardslash.chevron.right")
+
+                Button {
+                    showFunctionList = true
+                    if functionIndexState == .idle { Task { await loadFunctionIndex() } }
+                } label: {
+                    cfgToolbarItem("list.bullet.indent", "Functions")
                 }
-                Button { showAnalysisCenter = true } label: {
-                    Label("Analysis Center", systemImage: "square.grid.3x3")
+
+                Button {
+                    showObjCBrowser = true
+                    if functionIndexState == .idle { Task { await loadFunctionIndex() } }
+                } label: {
+                    cfgToolbarItem("curlybraces", "Classes")
                 }
-            } label: {
-                cfgToolbarIcon("square.grid.2x2")
+
+                Button {
+                    showFunctionInfo = true
+                    if cfgCallersState == .idle, let f = cfgFunction { Task { await loadCallers(of: f.startAddress) } }
+                } label: {
+                    cfgToolbarItem("info.circle", "Info")
+                }
+
+                Button { openCallGraph() } label: {
+                    cfgToolbarItem("point.3.connected.trianglepath.dotted", "Call Graph")
+                }
             }
 
-            Button {
-                showFunctionList = true
-                if functionIndexState == .idle { Task { await loadFunctionIndex() } }
-            } label: {
-                cfgToolbarIcon("list.bullet.indent")
-            }
+            HStack(spacing: 0) {
+                Button { showCFGFind = true } label: {
+                    cfgToolbarItem("magnifyingglass", "Find")
+                }
 
-            Button {
-                showObjCBrowser = true
-                if functionIndexState == .idle { Task { await loadFunctionIndex() } }
-            } label: {
-                cfgToolbarIcon("curlybraces")
-            }
+                Button {
+                    showStringIndex = true
+                    if stringIndexState == .idle { Task { await buildStringIndex() } }
+                } label: {
+                    cfgToolbarItem("text.magnifyingglass", "Strings")
+                }
 
-            Button {
-                showFunctionInfo = true
-                if cfgCallersState == .idle, let f = cfgFunction { Task { await loadCallers(of: f.startAddress) } }
-            } label: {
-                cfgToolbarIcon("info.circle")
-            }
+                Button {
+                    showGateFinder = true
+                    if gateFinderState == .idle { Task { await buildGateCandidates() } }
+                } label: {
+                    cfgToolbarItem("flag.badge.ellipsis", "Gates")
+                }
 
-            Button { openCallGraph() } label: {
-                cfgToolbarIcon("point.3.connected.trianglepath.dotted")
-            }
+                Button {
+                    showManifest = true
+                    if manifestState == .idle { Task { await loadManifest() } }
+                } label: {
+                    cfgToolbarItem("lock.shield", "Manifest")
+                }
 
-            Button { showCFGFind = true } label: {
-                cfgToolbarIcon("magnifyingglass")
-            }
-
-            Button {
-                showStringIndex = true
-                if stringIndexState == .idle { Task { await buildStringIndex() } }
-            } label: {
-                cfgToolbarIcon("text.magnifyingglass")
-            }
-
-            Button {
-                showGateFinder = true
-                if gateFinderState == .idle { Task { await buildGateCandidates() } }
-            } label: {
-                cfgToolbarIcon("flag.badge.ellipsis")
-            }
-
-            Button {
-                showManifest = true
-                if manifestState == .idle { Task { await loadManifest() } }
-            } label: {
-                cfgToolbarIcon("lock.shield")
-            }
-
-            Button { dismiss() } label: {
-                cfgToolbarIcon("xmark")
+                Button { dismiss() } label: {
+                    cfgToolbarItem("xmark", "Close")
+                }
             }
         }
-        .padding(.horizontal, 20).padding(.vertical, 12)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(.white.opacity(0.12), lineWidth: 1))
+        .padding(.horizontal, 10).padding(.vertical, 10)
+        .frame(maxWidth: 420)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
         .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
+        .padding(.horizontal, 14)
         .padding(.bottom, 18)
     }
 
-    private func cfgToolbarIcon(_ name: String) -> some View {
-        Image(systemName: name)
-            .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: 26, height: 26)
+    /// One icon-over-label cell, evenly filling its row — the building block
+    /// for `cfgFloatingToolbar`'s two-row layout.
+    private func cfgToolbarItem(_ systemImage: String, _ label: String) -> some View {
+        VStack(spacing: 3) {
+            Image(systemName: systemImage)
+                .font(.system(size: 17, weight: .semibold))
+            Text(label)
+                .font(.system(size: 9, weight: .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
     }
+
 
     /// Resolved call targets in the current window (real Capstone bl/branch data,
     /// deduped by address) plus a raw "jump to address" fallback.
@@ -2334,10 +2379,13 @@ struct DeveloperToolSheet: View {
             Group {
                 switch stringIndexState {
                 case .idle, .loading:
-                    VStack(spacing: 10) {
-                        ProgressView(value: stringIndexProgress).tint(blue).frame(width: 180)
-                        Text("Decoding every function for real string/selector refs… \(Int(stringIndexProgress * 100))%")
-                            .font(.caption).foregroundStyle(Theme.subtle)
+                    VStack(spacing: 18) {
+                        AirShareWatermark(size: 96)
+                        VStack(spacing: 10) {
+                            ProgressView(value: stringIndexProgress).tint(blue).frame(width: 180)
+                            Text("Decoding every function for real string/selector refs… \(Int(stringIndexProgress * 100))%")
+                                .font(.caption).foregroundStyle(Theme.subtle)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .empty:
@@ -2406,10 +2454,13 @@ struct DeveloperToolSheet: View {
             Group {
                 switch gateFinderState {
                 case .idle, .loading:
-                    VStack(spacing: 10) {
-                        ProgressView(value: gateFinderProgress).tint(blue).frame(width: 180)
-                        Text("Scanning every function for load+test patterns… \(Int(gateFinderProgress * 100))%")
-                            .font(.caption).foregroundStyle(Theme.subtle)
+                    VStack(spacing: 18) {
+                        AirShareWatermark(size: 96)
+                        VStack(spacing: 10) {
+                            ProgressView(value: gateFinderProgress).tint(blue).frame(width: 180)
+                            Text("Scanning every function for load+test patterns… \(Int(gateFinderProgress * 100))%")
+                                .font(.caption).foregroundStyle(Theme.subtle)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .empty:
@@ -2533,9 +2584,12 @@ struct DeveloperToolSheet: View {
             Group {
                 switch manifestState {
                 case .idle, .loading:
-                    VStack(spacing: 10) {
-                        ProgressView().tint(blue)
-                        Text("Reading Info.plist + LC_CODE_SIGNATURE entitlements…").font(.caption).foregroundStyle(Theme.subtle)
+                    VStack(spacing: 18) {
+                        AirShareWatermark(size: 96)
+                        VStack(spacing: 10) {
+                            ProgressView().tint(blue)
+                            Text("Reading Info.plist + LC_CODE_SIGNATURE entitlements…").font(.caption).foregroundStyle(Theme.subtle)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .empty:
@@ -2608,9 +2662,12 @@ struct DeveloperToolSheet: View {
             Group {
                 switch functionIndexState {
                 case .idle, .loading:
-                    VStack(spacing: 10) {
-                        ProgressView().tint(blue)
-                        Text("Reading LC_FUNCTION_STARTS + LC_SYMTAB…").font(.caption).foregroundStyle(Theme.subtle)
+                    VStack(spacing: 18) {
+                        AirShareWatermark(size: 96)
+                        VStack(spacing: 10) {
+                            ProgressView().tint(blue)
+                            Text("Reading LC_FUNCTION_STARTS + LC_SYMTAB…").font(.caption).foregroundStyle(Theme.subtle)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .empty:

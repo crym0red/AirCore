@@ -358,17 +358,27 @@ private struct HueWheel: View {
 
 struct BGTick { let date: Date }
 
-/// One clock for the background. Pauses (still frame) when the app is inactive, Low Power Mode is on
-/// or Reduce Motion is enabled, and is rasterized on the GPU so scrolling stays smooth.
+/// One clock for the background. Pauses (still frame) only when the app is
+/// inactive or the user has Reduce Motion on (an accessibility preference,
+/// always respected). Low Power Mode used to hard-pause this too — that's
+/// exactly what "dynamic backgrounds stopped working" (frozen/static) turned
+/// out to be: the layer still rendered, it just never ticked again while
+/// Low Power Mode was on. Now it just throttles to a much lower frame rate
+/// instead of stopping outright, so it still visibly drifts/animates while
+/// using meaningfully less power. Rasterized on the GPU so scrolling stays
+/// smooth either way.
 struct BGTimeline<Content: View>: View {
     @Environment(\.scenePhase) private var phase
     var fps: Double = 30
     @ViewBuilder let content: (BGTick) -> Content
     private var paused: Bool {
-        phase != .active || ProcessInfo.processInfo.isLowPowerModeEnabled || UIAccessibility.isReduceMotionEnabled
+        phase != .active || UIAccessibility.isReduceMotionEnabled
+    }
+    private var effectiveFPS: Double {
+        ProcessInfo.processInfo.isLowPowerModeEnabled ? Swift.min(fps, 10) : fps
     }
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / fps, paused: paused)) { tl in
+        TimelineView(.animation(minimumInterval: 1.0 / effectiveFPS, paused: paused)) { tl in
             content(BGTick(date: tl.date))
         }
         .drawingGroup()

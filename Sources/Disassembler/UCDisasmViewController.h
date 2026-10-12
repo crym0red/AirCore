@@ -38,6 +38,19 @@ typedef NS_ENUM(NSInteger, UCDisasmViewMode) {
 
 - (void)layoutGraph;
 
+/// Builds block views a few at a time across runloop turns instead of all at
+/// once on the main thread. A function with a large number of basic blocks
+/// (common in obfuscated or heavily-inlined code) can otherwise take long
+/// enough building every instruction-attributed-string card synchronously
+/// that the app appears hung — no runloop turn runs, so nothing redraws,
+/// including the loading indicator, which is what made it look like it was
+/// stuck mid-spin rather than actually working. `progress` is called on the
+/// main thread after each batch with a 0...1 fraction; `completion` runs
+/// once every block view exists and it's safe to call `layoutGraph`.
+- (void)buildBlockViewsAsync:(nullable NSArray<UCBasicBlock *> *)basicBlocks
+                     progress:(nullable void (^)(float fraction))progress
+                   completion:(nullable void (^)(void))completion;
+
 @end
 
 @interface UCFuncListViewController : UIViewController

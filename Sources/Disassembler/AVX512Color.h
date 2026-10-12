@@ -34,6 +34,14 @@ NS_ASSUME_NONNULL_BEGIN
 
 // UI element colors
 @property (readonly, class) UIColor *tintColor;
+
+/// The app's real, live accent color — read straight from the same
+/// NSUserDefaults key ("theme_accent_hex") Swift's `Theme.accentHex` reads,
+/// so Objective-C UIKit screens (the CFG viewer, etc.) can match the user's
+/// actual chosen accent instead of a hardcoded generic system blue. Falls
+/// back to the same default ("FF9A1F") Theme.swift uses when nothing's been
+/// set yet.
+@property (readonly, class) UIColor *appAccentColor;
 @property (readonly, class) UIColor *scrollViewBackgroundColor;
 @property (readonly, class) UIColor *iconColor;
 @property (readonly, class) UIColor *borderColor;

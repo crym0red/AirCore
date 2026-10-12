@@ -41,3 +41,26 @@ struct OnboardingLogo: View {
         return UIImage(data: data)
     }
 }
+
+/// A plain, transparent-background AirShare mark used to brand full-screen
+/// loading/progress states (string search, gate checks, class scans, etc.)
+/// that would otherwise just be empty black space above a progress bar.
+/// Unlike `OnboardingLogo`, this has no card, fill, or border — just the
+/// logo itself, sitting directly on whatever background it's placed over.
+///
+/// Uses the existing "airshare_mark" entry already in Assets.xcassets
+/// (a genuine transparent-PNG asset), the same mark already shipping in
+/// the app, rather than a separate bundled file.
+struct AirShareWatermark: View {
+    var size: CGFloat = 96
+    var opacity: Double = 0.92
+
+    var body: some View {
+        Image("airshare_mark")
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .opacity(opacity)
+            .accessibilityHidden(true)
+    }
+}

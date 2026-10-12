@@ -12,7 +12,10 @@
 
 @interface UCDisasmViewController () <UIScrollViewDelegate>
 
-@property (nonatomic, strong) UIActivityIndicatorView *loadingIndicator;
+@property (nonatomic, strong) UIView *loadingOverlay;
+@property (nonatomic, strong) UIImageView *loadingLogo;
+@property (nonatomic, strong) UIProgressView *loadingProgressView;
+@property (nonatomic, strong) UILabel *loadingStatusLabel;
 @property (nonatomic, strong) UILabel *statusLabel;
 
 @property (nonatomic, strong) UCDisasmResult *disasmResult;
@@ -133,7 +136,12 @@
     self.zoomOutBtn.frame = CGRectMake(width - btnW - 4 - resetW - 4 - btnW, 0, btnW, btnH);
     self.graphStatusLabel.frame = CGRectMake(12, 0, width - btnW * 2 - resetW - 24, btnH);
 
-    self.loadingIndicator.center = CGPointMake(width / 2, graphY + graphH / 2);
+    CGFloat overlayW = MIN(220, width - 40);
+    self.loadingOverlay.bounds = CGRectMake(0, 0, overlayW, 150);
+    self.loadingOverlay.center = CGPointMake(width / 2, graphY + graphH / 2);
+    self.loadingLogo.frame = CGRectMake((overlayW - 64) / 2, 0, 64, 64);
+    self.loadingProgressView.frame = CGRectMake(0, 86, overlayW, 2);
+    self.loadingStatusLabel.frame = CGRectMake(0, 98, overlayW, 32);
 }
 
 - (void)setupNavigationBar {
@@ -152,16 +160,22 @@
 
 - (void)setupViewModeControl {
     self.modeLabel = [[UILabel alloc] init];
-    self.modeLabel.text = @"CFGGUI graphics to the";
+    // Was a garbled, never-finished placeholder string ("CFGGUI graphics to
+    // the") that shipped straight to the top bar.
+    self.modeLabel.text = @"Control Flow Graph";
     self.modeLabel.textAlignment = NSTextAlignmentCenter;
     self.modeLabel.font = [UIFont boldSystemFontOfSize:13];
-    self.modeLabel.textColor = AVX512Color.tintColor;
+    self.modeLabel.textColor = AVX512Color.appAccentColor;
     [self.view addSubview:self.modeLabel];
 }
 
 - (void)setupGraphView {
     self.graphScrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
-    self.graphScrollView.backgroundColor = [UIColor colorWithRed:0.85 green:0.90 blue:0.96 alpha:1.0];
+    // Was a light-blue/white canvas — flipped to black, with the graph's own
+    // gradient (below) carrying a subtle tint of the app's real accent color
+    // instead of a hardcoded generic blue, so this still feels like the rest
+    // of the app rather than a bolted-on light-mode tool.
+    self.graphScrollView.backgroundColor = [UIColor colorWithWhite:0.04 alpha:1.0];
     self.graphScrollView.minimumZoomScale = 0.3;
     self.graphScrollView.maximumZoomScale = 3.0;
     self.graphScrollView.delegate = self;
@@ -191,11 +205,17 @@
     self.graphStatusLabel = [[UILabel alloc] init];
     self.graphStatusLabel.font = [UIFont fontWithName:@"Menlo-Regular" size:11];
     self.graphStatusLabel.textColor = [UIColor whiteColor];
-    self.graphStatusLabel.text = @"CFG: How you are in the process of...";
+    // Was another unfinished placeholder string ("CFG: How you are in the
+    // process of...") — replaced on load by updateCFGView's real summary
+    // (block/byte/instruction counts), this is just what's briefly visible
+    // before that.
+    self.graphStatusLabel.text = @"Loading control flow graph…";
     [self.graphStatusBar addSubview:self.graphStatusLabel];
     
     self.zoomOutBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.zoomOutBtn setTitle:@"---... uh" forState:UIControlStateNormal];
+    // Was garbled placeholder text ("---... uh") that showed up literally in
+    // the toolbar instead of a minus sign.
+    [self.zoomOutBtn setTitle:@"−" forState:UIControlStateNormal];
     [self.zoomOutBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.zoomOutBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
     [self.zoomOutBtn addTarget:self action:@selector(zoomOutAction) forControlEvents:UIControlEventTouchUpInside];
@@ -209,7 +229,9 @@
     [self.graphStatusBar addSubview:self.zoomResetBtn];
     
     self.zoomInBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.zoomInBtn setTitle:@"+ ⁇  plus-" forState:UIControlStateNormal];
+    // Was garbled placeholder text ("+ ⁇  plus-") that showed up literally in
+    // the toolbar instead of a plus sign.
+    [self.zoomInBtn setTitle:@"+" forState:UIControlStateNormal];
     [self.zoomInBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.zoomInBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
     [self.zoomInBtn addTarget:self action:@selector(zoomInAction) forControlEvents:UIControlEventTouchUpInside];
@@ -251,17 +273,58 @@
 }
 
 - (void)setupLoadingIndicator {
-    self.loadingIndicator = [[UIActivityIndicatorView alloc]
-        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
-    self.loadingIndicator.hidesWhenStopped = YES;
-    [self.view addSubview:self.loadingIndicator];
+    // Was a plain spinner with no real progress signal — if the view ever
+    // sat on one frame for a while (eg. building a lot of block views on a
+    // large function) it was indistinguishable from actually being hung.
+    // This is a real progress bar driven by actual load/layout stages, with
+    // the app's own mark on it instead of a generic system spinner.
+    self.loadingOverlay = [[UIView alloc] init];
+    self.loadingOverlay.backgroundColor = [UIColor clearColor];
+    [self.view addSubview:self.loadingOverlay];
+
+    self.loadingLogo = [[UIImageView alloc] initWithImage:[UIImage imageNamed:@"airshare_mark"]];
+    self.loadingLogo.contentMode = UIViewContentModeScaleAspectFit;
+    [self.loadingOverlay addSubview:self.loadingLogo];
+
+    self.loadingProgressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    self.loadingProgressView.progressTintColor = AVX512Color.appAccentColor;
+    self.loadingProgressView.trackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    self.loadingProgressView.progress = 0.0;
+    self.loadingProgressView.layer.cornerRadius = 1;
+    self.loadingProgressView.clipsToBounds = YES;
+    [self.loadingOverlay addSubview:self.loadingProgressView];
+
+    self.loadingStatusLabel = [[UILabel alloc] init];
+    self.loadingStatusLabel.font = [UIFont systemFontOfSize:12];
+    self.loadingStatusLabel.textColor = [UIColor colorWithWhite:0.75 alpha:1.0];
+    self.loadingStatusLabel.textAlignment = NSTextAlignmentCenter;
+    self.loadingStatusLabel.numberOfLines = 2;
+    self.loadingStatusLabel.text = @"Disassembling…";
+    [self.loadingOverlay addSubview:self.loadingStatusLabel];
+}
+
+/// Updates the loading overlay's progress bar + status text. `progress` is
+/// 0...1; pass a value >= 1.0 to let `hideLoadingOverlay` fade it out.
+- (void)setLoadingProgress:(float)progress status:(NSString *)status {
+    self.loadingOverlay.hidden = NO;
+    self.loadingOverlay.alpha = 1.0;
+    [self.loadingProgressView setProgress:MAX(0.02, progress) animated:YES];
+    if (status.length > 0) self.loadingStatusLabel.text = status;
+}
+
+- (void)hideLoadingOverlay {
+    [UIView animateWithDuration:0.2 animations:^{
+        self.loadingOverlay.alpha = 0.0;
+    } completion:^(BOOL finished) {
+        self.loadingOverlay.hidden = YES;
+    }];
 }
 
 #pragma mark - In addition to the compilation in re-
 
 - (void)loadDisassembly {
-    [self.loadingIndicator startAnimating];
-    
+    [self setLoadingProgress:0.08 status:@"Disassembling…"];
+
     __weak typeof(self) weakSelf = self;
     uint64_t startAddr = self.startAddress;
     NSUInteger codeSz = self.codeSize;
@@ -321,9 +384,9 @@
 
             strongSelf.disasmResult = result;
             strongSelf.currentFunction = function;
-            [strongSelf.loadingIndicator stopAnimating];
 
             if (function) {
+                [strongSelf setLoadingProgress:0.45 status:@"Building control flow graph…"];
                 strongSelf.navTitle = function.name;
                 strongSelf.title = function.name;
                 [strongSelf updateCFGView];
@@ -331,6 +394,7 @@
                 // Genuinely undecodable (unmapped/unreadable region, or Capstone
                 // produced nothing at all) — say so explicitly instead of leaving
                 // an unexplained blank graph behind the placeholder status text.
+                [strongSelf hideLoadingOverlay];
                 strongSelf.graphStatusLabel.text = [NSString stringWithFormat:
                     @"Could not disassemble 0x%llx — not a decodable code region.", startAddr];
             }
@@ -340,47 +404,69 @@
 
 - (void)updateCFGView {
     if (!self.currentFunction) return;
-    
-    NSArray *blocks = self.currentFunction.basicBlocks;
-    self.cfgView.basicBlocks = blocks;
+
+    NSArray<UCBasicBlock *> *blocks = self.currentFunction.basicBlocks;
+    __weak typeof(self) weakSelf = self;
+
+    // Building one view per basic block (each with its own attributed-string
+    // instruction listing) synchronously on the main thread is what made a
+    // large function's loading screen look permanently stuck: no runloop
+    // turn ran until every block view existed, so nothing on screen — the
+    // progress bar included — could move. This builds them a handful at a
+    // time so the bar (and the rest of the UI) actually stays live.
+    [self.cfgView buildBlockViewsAsync:blocks progress:^(float fraction) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf setLoadingProgress:(0.45f + fraction * 0.45f)
+                                 status:[NSString stringWithFormat:@"Laying out blocks… %d%%", (int)(fraction * 100)]];
+    } completion:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf finishCFGLayout];
+    }];
+}
+
+- (void)finishCFGLayout {
+    [self setLoadingProgress:0.97 status:@"Finishing…"];
     [self.cfgView layoutGraph];
-    
+
     self.graphScrollView.contentSize = self.cfgView.bounds.size;
-    
+
     CGSize viewSize = self.graphScrollView.bounds.size;
     CGSize contentSize = self.cfgView.bounds.size;
-    
+
     if (contentSize.width > 0 && contentSize.height > 0 && viewSize.width > 0 && viewSize.height > 0) {
         CGFloat scaleX = viewSize.width / contentSize.width;
         CGFloat scaleY = viewSize.height / contentSize.height;
         CGFloat fitScale = MIN(scaleX, scaleY) * 0.95;
-        
+
         fitScale = MIN(fitScale, 1.0);
         fitScale = MAX(fitScale, self.graphScrollView.minimumZoomScale);
-        
+
         self.graphScrollView.zoomScale = fitScale;
-        
+
         CGPoint offset = CGPointMake(
             (contentSize.width * fitScale - viewSize.width) / 2,
             (contentSize.height * fitScale - viewSize.height) / 2
         );
         self.graphScrollView.contentOffset = offset;
     }
-    
+
     NSString *funcName = self.currentFunction.name;
     if (funcName.length > 40) {
         funcName = [NSString stringWithFormat:@"%@...", [funcName substringToIndex:40]];
     }
-    
+
     self.graphStatusLabel.text = [NSString stringWithFormat:@"%@  |  %lu blocks  |  %lu %@  |  %lu instr",
                                    funcName,
                                    (unsigned long)self.currentFunction.basicBlockCount,
                                    (unsigned long)self.currentFunction.size,
                                    self.currentFunction.boundaryIsBounded ? @"bytes (bounded)" : @"bytes",
                                    (unsigned long)self.currentFunction.instructions.count];
-    
+
     [self updateZoomLabel];
     [self.view setNeedsLayout];
+    [self hideLoadingOverlay];
 }
 
 - (void)handleInstructionTap:(UCDisasmInstruction *)insn {
@@ -531,9 +617,17 @@
         self.blockViewMap = [NSMutableDictionary dictionary];
         
         self.bgGradient = [CAGradientLayer layer];
+        // Was a light-blue/white gradient — now black at the edges with a
+        // dark, low-brightness tint of the app's real accent color toward
+        // the center, so the CFG canvas itself carries the app's branding
+        // instead of a generic light "diagram tool" look.
+        UIColor *accent = AVX512Color.appAccentColor;
+        CGFloat ar = 0, ag = 0, ab = 0, aa = 0;
+        [accent getRed:&ar green:&ag blue:&ab alpha:&aa];
+        UIColor *accentDark = [UIColor colorWithRed:ar * 0.22 green:ag * 0.22 blue:ab * 0.22 alpha:1.0];
         self.bgGradient.colors = @[
-            (__bridge id)[UIColor colorWithRed:0.90 green:0.94 blue:0.98 alpha:1.0].CGColor,
-            (__bridge id)[UIColor colorWithRed:0.80 green:0.88 blue:0.96 alpha:1.0].CGColor
+            (__bridge id)[UIColor colorWithWhite:0.03 alpha:1.0].CGColor,
+            (__bridge id)accentDark.CGColor
         ];
         [self.layer addSublayer:self.bgGradient];
     }
@@ -564,19 +658,80 @@
     }
 }
 
+- (void)buildBlockViewsAsync:(NSArray<UCBasicBlock *> *)basicBlocks
+                     progress:(void (^)(float fraction))progress
+                   completion:(void (^)(void))completion {
+    _basicBlocks = basicBlocks;
+
+    for (UIView *v in self.blockViews) [v removeFromSuperview];
+    for (CALayer *l in self.edgeLayers) [l removeFromSuperlayer];
+    [self.blockViews removeAllObjects];
+    [self.edgeLayers removeAllObjects];
+    [self.blockViewMap removeAllObjects];
+
+    if (basicBlocks.count == 0) {
+        if (progress) progress(1.0);
+        if (completion) completion();
+        return;
+    }
+
+    NSUInteger total = basicBlocks.count;
+    // Small enough per-tick to keep each runloop turn under a frame or two,
+    // large enough that a huge function (thousands of blocks) still finishes
+    // in a reasonable number of turns rather than one per block.
+    const NSUInteger batchSize = 8;
+
+    __weak typeof(self) weakSelf = self;
+    __block NSUInteger nextIndex = 0;
+    __block void (^buildBatch)(void) = nil;
+    void (^buildBatchImpl)(void) = ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        NSUInteger end = MIN(nextIndex + batchSize, total);
+        for (NSUInteger i = nextIndex; i < end; i++) {
+            UCBasicBlock *block = basicBlocks[i];
+            UIView *blockView = [strongSelf createBlockView:block];
+            [strongSelf addSubview:blockView];
+            [strongSelf.blockViews addObject:blockView];
+            strongSelf.blockViewMap[@(block.blockId)] = blockView;
+        }
+        nextIndex = end;
+
+        if (progress) progress((float)nextIndex / (float)total);
+
+        if (nextIndex < total) {
+            dispatch_async(dispatch_get_main_queue(), buildBatch);
+        } else {
+            buildBatch = nil; // break the retain cycle now that we're done
+            if (completion) completion();
+        }
+    };
+    buildBatch = buildBatchImpl;
+    buildBatch();
+}
+
 - (UIView *)createBlockView:(UCBasicBlock *)block {
     UIView *view = [[UIView alloc] init];
-    view.backgroundColor = [UIColor whiteColor];
+    // Was a plain white card — now a dark card so it matches the rest of the
+    // app's black theme instead of looking like a bolted-on light-mode tool.
+    // Every text color below that assumed a white background is flipped to
+    // its light-on-dark counterpart in the same pass.
+    view.backgroundColor = [UIColor colorWithWhite:0.09 alpha:1.0];
     view.layer.borderWidth = 1.0;
     view.layer.cornerRadius = 4;
     view.clipsToBounds = YES;
     view.layer.shadowColor = [UIColor blackColor].CGColor;
     view.layer.shadowOffset = CGSizeMake(0, 2);
     view.layer.shadowRadius = 3;
-    view.layer.shadowOpacity = 0.15;
+    view.layer.shadowOpacity = 0.35;
     view.layer.masksToBounds = NO;
-    
-    UIColor *borderColor = [UIColor colorWithRed:0.55 green:0.65 blue:0.80 alpha:1.0];
+
+    // Default/"normal" blocks (no entry/exit/conditional semantics of their
+    // own) are tinted with the app's real accent color instead of a generic
+    // blue-gray — entry/exit/conditional blocks keep their meaningful
+    // green/red coding untouched.
+    UIColor *borderColor = AVX512Color.appAccentColor;
     UIColor *headerColor = [UIColor colorWithRed:0.70 green:0.80 blue:0.92 alpha:1.0];
     
     switch (block.type) {
@@ -619,7 +774,7 @@
     [headerBar addSubview:headerLabel];
     
     UCInstructionTextView *textView = [[UCInstructionTextView alloc] init];
-    textView.backgroundColor = [UIColor whiteColor];
+    textView.backgroundColor = [UIColor colorWithWhite:0.09 alpha:1.0];
     textView.editable = NO;
     textView.scrollEnabled = NO;
     textView.textContainerInset = UIEdgeInsetsMake(4, 6, 4, 6);
@@ -634,24 +789,26 @@
             addr = [addr stringByPaddingToLength:8 withString:@"0" startingAtIndex:0];
         }
         
-        UIColor *mnemColor = [UIColor colorWithWhite:0.15 alpha:1.0];
+        // Brightened for the dark card: these used to be dark grays meant to
+        // sit on a white background.
+        UIColor *mnemColor = [UIColor colorWithWhite:0.92 alpha:1.0];
         if (insn.isCall) {
-            mnemColor = [UIColor colorWithRed:0.6 green:0.3 blue:0.0 alpha:1.0];
+            mnemColor = [UIColor colorWithRed:1.0 green:0.68 blue:0.30 alpha:1.0];
         } else if (insn.isReturn) {
-            mnemColor = [UIColor colorWithRed:0.7 green:0.15 blue:0.15 alpha:1.0];
+            mnemColor = [UIColor colorWithRed:1.0 green:0.45 blue:0.45 alpha:1.0];
         } else if (insn.isBranch) {
-            mnemColor = [UIColor colorWithRed:0.1 green:0.45 blue:0.15 alpha:1.0];
+            mnemColor = [UIColor colorWithRed:0.45 green:0.85 blue:0.50 alpha:1.0];
         } else if (insn.isNop) {
-            mnemColor = [UIColor colorWithWhite:0.5 alpha:1.0];
+            mnemColor = [UIColor colorWithWhite:0.55 alpha:1.0];
         }
-        
+
         NSAttributedString *addrAttr = [[NSAttributedString alloc]
             initWithString:[NSString stringWithFormat:@"%@  ", addr]
             attributes:@{
-                NSForegroundColorAttributeName: [UIColor colorWithWhite:0.45 alpha:1.0],
+                NSForegroundColorAttributeName: [UIColor colorWithWhite:0.55 alpha:1.0],
                 NSFontAttributeName: [UIFont fontWithName:@"Menlo-Regular" size:9]
             }];
-        
+
         NSString *mnem = [(insn.mnemonic ?: @"") stringByPaddingToLength:8 withString:@" " startingAtIndex:0];
         NSAttributedString *mnemAttr = [[NSAttributedString alloc]
             initWithString:mnem
@@ -659,13 +816,13 @@
                 NSForegroundColorAttributeName: mnemColor,
                 NSFontAttributeName: [UIFont fontWithName:@"Menlo-Bold" size:9]
             }];
-        
+
         NSString *opsText = insn.operands ?: @"";
         BOOL hasTrailingComment = (insn.comment.length > 0) || (insn.xrefComment.length > 0);
         NSAttributedString *opAttr = [[NSAttributedString alloc]
             initWithString:[NSString stringWithFormat:@"%@%@", opsText, hasTrailingComment ? @"" : @"\n"]
             attributes:@{
-                NSForegroundColorAttributeName: [UIColor colorWithWhite:0.2 alpha:1.0],
+                NSForegroundColorAttributeName: [UIColor colorWithWhite:0.85 alpha:1.0],
                 NSFontAttributeName: [UIFont fontWithName:@"Menlo-Regular" size:9]
             }];
 
@@ -687,7 +844,8 @@
             NSAttributedString *commentAttr = [[NSAttributedString alloc]
                 initWithString:commentText
                 attributes:@{
-                    NSForegroundColorAttributeName: [UIColor colorWithRed:0.35 green:0.45 blue:0.35 alpha:1.0],
+                    // Brightened for the dark card (was a dark olive meant for a white bg).
+                    NSForegroundColorAttributeName: [UIColor colorWithRed:0.55 green:0.75 blue:0.55 alpha:1.0],
                     NSFontAttributeName: [UIFont fontWithName:@"Menlo-Italic" size:9] ?: [UIFont italicSystemFontOfSize:9]
                 }];
             [attrText appendAttributedString:commentAttr];
@@ -932,7 +1090,10 @@
             } else if (succ.type == UCBasicBlockTypeConditionalFalse) {
                 lineColor = [UIColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:1.0];
             } else {
-                lineColor = [UIColor colorWithRed:0.3 green:0.4 blue:0.7 alpha:1.0];
+                // Default/unconditional edges now use the app's real accent
+                // color instead of a hardcoded blue, so the whole graph
+                // reads as an AirShare feature.
+                lineColor = AVX512Color.appAccentColor;
             }
             
             [self drawEdgeFrom:fromView to:toView color:lineColor isBackEdge:isBackEdge];

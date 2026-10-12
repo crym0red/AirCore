@@ -96,6 +96,18 @@
     #endif
 }
 
++ (UIColor *)appAccentColor {
+    NSString *hex = [[NSUserDefaults standardUserDefaults] stringForKey:@"theme_accent_hex"];
+    if (hex.length == 0) hex = @"FF9A1F";   // same default as Theme.swift's Theme.defaultAccent
+    NSScanner *scanner = [NSScanner scannerWithString:hex];
+    unsigned int rgbValue = 0;
+    if (![scanner scanHexInt:&rgbValue]) rgbValue = 0xFF9A1F;
+    CGFloat r = ((rgbValue & 0xFF0000) >> 16) / 255.0;
+    CGFloat g = ((rgbValue & 0x00FF00) >> 8) / 255.0;
+    CGFloat b = (rgbValue & 0x0000FF) / 255.0;
+    return [UIColor colorWithRed:r green:g blue:b alpha:1.0];
+}
+
 + (UIColor *)scrollViewBackgroundColor {
     return AVX512DynamicColor(
         systemGroupedBackgroundColor,
