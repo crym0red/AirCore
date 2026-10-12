@@ -149,6 +149,94 @@ nonisolated enum MachOTools {
         return out
     }
 
+    /// Real function entry points, straight from LC_FUNCTION_STARTS (the same
+    /// linkedit blob `nm`/Hopper/IDA use) — a ULEB128-delta list of addresses
+    /// relative to __TEXT's vmaddr. Not a heuristic/prologue guess: this is the
+    /// exact table the linker wrote. Empty when the binary was built without it
+    /// (rare) or already stripped of linkedit data.
+    static func functionStarts(in thin: Data) -> [UInt64] {
+        guard is64(thin) else { return [] }
+        let ncmds = Int(thin.u32le(16))
+        var off = 32
+        var dataoff: Int?
+        var datasize = 0
+        for _ in 0..<ncmds {
+            guard off + 8 <= thin.count else { break }
+            let cmd = thin.u32le(off); let size = Int(thin.u32le(off + 4))
+            guard size >= 8, off + size <= thin.count else { break }
+            if cmd == 0x26 {   // LC_FUNCTION_STARTS
+                dataoff = Int(thin.u32le(off + 8))
+                datasize = Int(thin.u32le(off + 12))
+                break
+            }
+            off += size
+        }
+        guard let start = dataoff, datasize > 0, start >= 0, start + datasize <= thin.count,
+              let text = segments(in: thin).first(where: { $0.name == "__TEXT" }) else { return [] }
+
+        var addrs: [UInt64] = []
+        var running = text.vmaddr
+        var p = thin.startIndex + start
+        let end = Swift.min(p + datasize, thin.endIndex)
+        while p < end {
+            var result: UInt64 = 0, shift: UInt64 = 0, byte: UInt8 = 0, consumed = 0
+            repeat {
+                guard p < end else { break }
+                byte = thin[p]
+                p = thin.index(after: p)
+                result |= UInt64(byte & 0x7F) << shift
+                shift += 7
+                consumed += 1
+            } while (byte & 0x80) != 0 && shift < 64
+            guard consumed > 0, result > 0 else { break }   // a 0 delta is linkedit padding, not a real gap
+            running += result
+            addrs.append(running)
+            if addrs.count > 200_000 { break }              // sanity bound, never hit on a real IPA
+        }
+        return addrs
+    }
+
+    /// Real (non-synthesized) symbol names from LC_SYMTAB/LC_DYSYMTAB, keyed by
+    /// address — the same table `nm`/`atos` read. Most App Store release builds
+    /// strip this for anything but Swift/ObjC metadata, so most functions will
+    /// have no entry here; that's reported as "no symbol", never invented.
+    static func symbolMap(in thin: Data) -> [UInt64: String] {
+        guard is64(thin) else { return [:] }
+        let ncmds = Int(thin.u32le(16))
+        var off = 32
+        var symoff = 0, nsyms = 0, stroff = 0, strsize = 0
+        for _ in 0..<ncmds {
+            guard off + 8 <= thin.count else { break }
+            let cmd = thin.u32le(off); let size = Int(thin.u32le(off + 4))
+            guard size >= 8, off + size <= thin.count else { break }
+            if cmd == 0x02 {   // LC_SYMTAB
+                symoff = Int(thin.u32le(off + 8))
+                nsyms = Int(thin.u32le(off + 12))
+                stroff = Int(thin.u32le(off + 16))
+                strsize = Int(thin.u32le(off + 20))
+                break
+            }
+            off += size
+        }
+        guard nsyms > 0, symoff > 0, strsize > 0,
+              symoff + nsyms * 16 <= thin.count, stroff + strsize <= thin.count else { return [:] }
+
+        var out: [UInt64: String] = [:]
+        for i in 0..<nsyms {
+            let base = symoff + i * 16
+            guard base + 16 <= thin.count else { break }
+            let strx = Int(thin.u32le(base))
+            let type = thin[thin.startIndex + base + 4]
+            let value = thin.u64le(base + 8)
+            guard value != 0 else { continue }
+            guard (type & 0xE0) == 0 else { continue }          // skip N_STAB debug symbols
+            guard (type & 0x0E) == 0x0E else { continue }       // N_SECT only — has a real address
+            guard strx >= 0, strx < strsize, let name = thin.cString(at: stroff + strx, max: strsize - strx), !name.isEmpty else { continue }
+            out[value] = name
+        }
+        return out
+    }
+
     /// Map a virtual address to a file offset *within the thin slice*.
     static func fileOffset(forVA va: UInt64, segments: [Segment]) -> Int? {
         for s in segments where va >= s.vmaddr && va < s.vmaddr + s.filesize {

@@ -1383,6 +1383,11 @@ struct DeveloperToolSheet: View {
     @State private var cfgStatus: String?
     @State private var showCFGFind = false
     @State private var cfgFindQuery = ""
+    @State private var showFunctionList = false
+    @State private var functionListQuery = ""
+    @State private var functionIndex: [(address: UInt64, name: String)] = []
+    @State private var functionIndexState: FunctionIndexState = .idle
+    enum FunctionIndexState: Equatable { case idle, loading, ready, empty }
 
     private var blue: Color { Theme.accent }
 
@@ -1490,6 +1495,7 @@ struct DeveloperToolSheet: View {
                 cfgFloatingToolbar
             }
             .sheet(isPresented: $showCFGFind) { cfgFindSheet }
+            .sheet(isPresented: $showFunctionList) { functionListSheet }
         } else {
             ZStack(alignment: .topTrailing) {
                 VStack(spacing: 10) {
@@ -1525,6 +1531,13 @@ struct DeveloperToolSheet: View {
                 }
             } label: {
                 cfgToolbarIcon("square.grid.2x2")
+            }
+
+            Button {
+                showFunctionList = true
+                if functionIndexState == .idle { Task { await loadFunctionIndex() } }
+            } label: {
+                cfgToolbarIcon("list.bullet.indent")
             }
 
             Button { showCFGFind = true } label: {
@@ -1620,6 +1633,90 @@ struct DeveloperToolSheet: View {
         showCFGFind = false
         cfgFunction = nil
         Task { await openLocalCFG() }
+    }
+
+    // MARK: Function list (LC_FUNCTION_STARTS + LC_SYMTAB — every real function entry in the binary)
+
+    /// Builds the index once per sheet session. LC_FUNCTION_STARTS gives the real
+    /// address of every function the linker recorded (not a prologue guess);
+    /// LC_SYMTAB gives real names wherever the binary wasn't stripped of them.
+    private func loadFunctionIndex() async {
+        functionIndexState = .loading
+        guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil) else {
+            functionIndexState = .empty
+            return
+        }
+        let starts = MachOTools.functionStarts(in: ctx.thin).sorted()
+        guard !starts.isEmpty else {
+            functionIndexState = .empty
+            return
+        }
+        let symbols = MachOTools.symbolMap(in: ctx.thin)
+        functionIndex = starts.map { addr in
+            (address: addr, name: symbols[addr] ?? String(format: "sub_%llx", addr))
+        }
+        functionIndexState = .ready
+    }
+
+    private var functionListResults: [(address: UInt64, name: String)] {
+        let q = functionListQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return functionIndex }
+        return functionIndex.filter {
+            $0.name.lowercased().contains(q) || String(format: "%llx", $0.address).contains(q)
+        }
+    }
+
+    private var functionListSheet: some View {
+        NavigationStack {
+            Group {
+                switch functionIndexState {
+                case .idle, .loading:
+                    VStack(spacing: 10) {
+                        ProgressView().tint(blue)
+                        Text("Reading LC_FUNCTION_STARTS + LC_SYMTAB…").font(.caption).foregroundStyle(Theme.subtle)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .empty:
+                    VStack(spacing: 8) {
+                        Image(systemName: "function").font(.largeTitle).foregroundStyle(Theme.subtle)
+                        Text("No LC_FUNCTION_STARTS in this binary.").font(.subheadline).foregroundStyle(Theme.text)
+                        Text("Some strip passes remove it along with the symbol table. Use Find to jump by call target or address instead.")
+                            .font(.caption).foregroundStyle(Theme.subtle).multilineTextAlignment(.center).padding(.horizontal, 30)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .ready:
+                    List {
+                        Section {
+                            ForEach(functionListResults, id: \.address) { fn in
+                                Button {
+                                    disasmVA = String(format: "0x%llx", fn.address)
+                                    showFunctionList = false
+                                    cfgFunction = nil
+                                    Task { await openLocalCFG() }
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(fn.name).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                                            Text(String(format: "0x%llx", fn.address)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "arrow.forward.circle").foregroundStyle(blue)
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("\(functionListResults.count) of \(functionIndex.count) functions — real LC_FUNCTION_STARTS entries")
+                        }.listRowBackground(Color(white: 0.08))
+                    }
+                    .scrollContentBackground(.hidden).background(Color.black)
+                    .searchable(text: $functionListQuery, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search name or address")
+                }
+            }
+            .background(Color.black)
+            .navigationTitle("Functions").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showFunctionList = false } } }
+        }
+        .preferredColorScheme(.dark)
     }
 
     // MARK: Strings
