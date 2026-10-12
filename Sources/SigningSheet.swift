@@ -1384,9 +1384,14 @@ struct DeveloperToolSheet: View {
     @State private var showCFGFind = false
     @State private var cfgFindQuery = ""
     @State private var showFunctionList = false
+    @State private var cfgPicked = false   // true once the user actually chose a function/address — guards the "nothing picked, close" check
     @State private var functionListQuery = ""
     @State private var functionIndex: [(address: UInt64, name: String)] = []
     @State private var functionIndexState: FunctionIndexState = .idle
+    @State private var showFunctionInfo = false
+    @State private var autoShowInfoOnLoad = false
+    @State private var cfgCallers: [(address: UInt64, name: String)] = []
+    @State private var cfgCallersState: FunctionIndexState = .idle
     enum FunctionIndexState: Equatable { case idle, loading, ready, empty }
 
     private var blue: Color { Theme.accent }
@@ -1431,7 +1436,15 @@ struct DeveloperToolSheet: View {
         }
         .preferredColorScheme(.dark)
         .task {
-            if mode == .cfgViewer { await openLocalCFG() } else { await runScan() }
+            if mode == .cfgViewer {
+                // Don't auto-dump the whole __text section as one giant pseudo-function —
+                // that's the 800+ block wall the whole-window window produced. Instead
+                // open straight to the real function list and let the user pick one.
+                showFunctionList = true
+                await loadFunctionIndex()
+            } else {
+                await runScan()
+            }
         }
         .sheet(item: $editHit) { hit in
             StringEditSheet(hit: hit, blue: blue) { patch in
@@ -1487,32 +1500,43 @@ struct DeveloperToolSheet: View {
 
     // MARK: CFG Viewer (direct — Capstone + UCDisassembler, no extra UI around it)
 
-    @ViewBuilder
     private var cfgDirectView: some View {
-        if let cfgFunction {
-            ZStack(alignment: .bottom) {
-                CFGViewerController(function: cfgFunction).ignoresSafeArea()
-                cfgFloatingToolbar
-            }
-            .sheet(isPresented: $showCFGFind) { cfgFindSheet }
-            .sheet(isPresented: $showFunctionList) { functionListSheet }
-        } else {
-            ZStack(alignment: .topTrailing) {
-                VStack(spacing: 10) {
-                    ProgressView().tint(blue)
-                    Text(cfgStatus ?? "Loading ARM64 text with Capstone…").font(.caption).foregroundStyle(Theme.subtle)
+        Group {
+            if let cfgFunction {
+                ZStack(alignment: .bottom) {
+                    CFGViewerController(function: cfgFunction).ignoresSafeArea()
+                    cfgFloatingToolbar
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)
+            } else {
+                ZStack(alignment: .topTrailing) {
+                    VStack(spacing: 10) {
+                        Image(systemName: "function").font(.largeTitle).foregroundStyle(Theme.subtle)
+                        Text("Pick a function to build its CFG").font(.subheadline).foregroundStyle(Theme.text)
+                        if functionIndexState == .loading {
+                            ProgressView().tint(blue).padding(.top, 4)
+                        } else {
+                            Button("Browse Functions") { showFunctionList = true }
+                                .buttonStyle(.bordered).tint(blue).padding(.top, 4)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)
 
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 26))
-                        .foregroundStyle(.white.opacity(0.75), Color.black.opacity(0.4))
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 26))
+                            .foregroundStyle(.white.opacity(0.75), Color.black.opacity(0.4))
+                    }
+                    .padding(16)
                 }
-                .padding(16)
+                .ignoresSafeArea()
             }
-            .ignoresSafeArea()
         }
+        .sheet(isPresented: $showCFGFind) { cfgFindSheet }
+        .sheet(isPresented: $showFunctionList) {
+            functionListSheet
+                .onDisappear { if !cfgPicked { dismiss() } }   // closed without picking anything → nothing to show, close the tool
+        }
+        .sheet(isPresented: $showFunctionInfo) { functionInfoSheet }
     }
 
     /// Bottom-floating pill over the CFG graph: switch tools without leaving the
@@ -1538,6 +1562,13 @@ struct DeveloperToolSheet: View {
                 if functionIndexState == .idle { Task { await loadFunctionIndex() } }
             } label: {
                 cfgToolbarIcon("list.bullet.indent")
+            }
+
+            Button {
+                showFunctionInfo = true
+                if cfgCallersState == .idle, let f = cfgFunction { Task { await loadCallers(of: f.startAddress) } }
+            } label: {
+                cfgToolbarIcon("info.circle")
             }
 
             Button { showCFGFind = true } label: {
@@ -1630,7 +1661,11 @@ struct DeveloperToolSheet: View {
         let raw = cfgFindQuery.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "0x", with: "")
         guard !raw.isEmpty, UInt64(raw, radix: 16) != nil else { return }
         disasmVA = "0x\(raw)"
+        cfgPicked = true
+        autoShowInfoOnLoad = true
+        cfgCallers = []; cfgCallersState = .idle
         showCFGFind = false
+        showFunctionList = false
         cfgFunction = nil
         Task { await openLocalCFG() }
     }
@@ -1658,6 +1693,86 @@ struct DeveloperToolSheet: View {
         functionIndexState = .ready
     }
 
+    /// Which real function (per LC_FUNCTION_STARTS) an address falls inside, and
+    /// where that function ends (the next function's start). Binary search over
+    /// `functionIndex`, which `loadFunctionIndex` builds in ascending order.
+    private func functionBounds(containing va: UInt64) -> (start: UInt64, end: UInt64, name: String)? {
+        guard !functionIndex.isEmpty else { return nil }
+        var lo = 0, hi = functionIndex.count - 1, idx = -1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            if functionIndex[mid].address <= va { idx = mid; lo = mid + 1 } else { hi = mid - 1 }
+        }
+        guard idx >= 0 else { return nil }
+        let start = functionIndex[idx].address
+        let end = idx + 1 < functionIndex.count ? functionIndex[idx + 1].address : start + 64 * 1024
+        guard va < end else { return nil }
+        return (start, end, functionIndex[idx].name)
+    }
+
+    /// Real callers of `target` — found by scanning __TEXT,__text for ARM64 `BL`
+    /// instructions (opcode bits [31:26] == 0b100101) and decoding each one's
+    /// signed, word-scaled 26-bit branch immediate directly from the raw machine
+    /// code. Not inferred from any single function's Capstone window — every hit
+    /// here is an actual `bl` encoded in the binary that resolves to this address.
+    private func loadCallers(of target: UInt64) async {
+        cfgCallersState = .loading
+        guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil),
+              let text = MachOTools.textSection(ctx.sections, in: ctx.thin) else {
+            cfgCallersState = .empty
+            return
+        }
+        let data = text.data
+        let base = text.vmaddr
+        var hitAddrs: [UInt64] = []
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            let count = raw.count / 4
+            for i in 0..<count {
+                let word = raw.loadUnaligned(fromByteOffset: i * 4, as: UInt32.self)
+                guard (word & 0xFC00_0000) == 0x9400_0000 else { continue }   // BL <imm26>
+                let raw26 = word & 0x03FF_FFFF
+                let signBit: UInt32 = 0x0200_0000
+                let imm26 = Int32(bitPattern: (raw26 ^ signBit) &- signBit)   // sign-extend the 26-bit field
+                let instrAddr = base + UInt64(i * 4)
+                let target64 = Int64(bitPattern: instrAddr) + Int64(imm26) * 4
+                guard target64 >= 0, UInt64(target64) == target else { continue }
+                hitAddrs.append(instrAddr)
+            }
+        }
+        var byFunction: [UInt64: (name: String, count: Int)] = [:]
+        for addr in hitAddrs {
+            guard let b = functionBounds(containing: addr) else { continue }
+            let prior = byFunction[b.start] ?? (b.name, 0)
+            byFunction[b.start] = (prior.name, prior.count + 1)
+        }
+        cfgCallers = byFunction.map { start, v in
+            (address: start, name: v.count > 1 ? "\(v.name) (\(v.count)×)" : v.name)
+        }.sorted { $0.address < $1.address }
+        cfgCallersState = cfgCallers.isEmpty ? .empty : .ready
+    }
+
+    /// Plain-text strings/class names Capstone's own annotation pass already
+    /// resolved for this function's `adrp`/`ldr` references (real xrefs, not a
+    /// guess) — gives a human a sense of what the function touches without
+    /// reading ARM64.
+    private var cfgReferencedStrings: [String] {
+        guard let instrs = cfgFunction?.instructions else { return [] }
+        var seen = Set<String>()
+        var out: [String] = []
+        for insn in instrs {
+            guard let c = insn.comment else { continue }
+            var scan = c.startIndex
+            while let open = c[scan...].firstIndex(of: "\""),
+                  let close = c[c.index(after: open)...].firstIndex(of: "\"") {
+                let s = String(c[c.index(after: open)..<close])
+                if !s.isEmpty, seen.insert(s).inserted { out.append(s) }
+                scan = c.index(after: close)
+            }
+            if out.count >= 12 { break }
+        }
+        return out
+    }
+
     private var functionListResults: [(address: UInt64, name: String)] {
         let q = functionListQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return functionIndex }
@@ -1677,11 +1792,18 @@ struct DeveloperToolSheet: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .empty:
-                    VStack(spacing: 8) {
+                    VStack(spacing: 10) {
                         Image(systemName: "function").font(.largeTitle).foregroundStyle(Theme.subtle)
                         Text("No LC_FUNCTION_STARTS in this binary.").font(.subheadline).foregroundStyle(Theme.text)
-                        Text("Some strip passes remove it along with the symbol table. Use Find to jump by call target or address instead.")
+                        Text("Some strip passes remove it along with the symbol table. Enter a VA to decode a window starting there instead.")
                             .font(.caption).foregroundStyle(Theme.subtle).multilineTextAlignment(.center).padding(.horizontal, 30)
+                        HStack {
+                            TextField("0x100004000", text: $cfgFindQuery)
+                                .font(.system(size: 13, design: .monospaced)).textInputAutocapitalization(.never).autocorrectionDisabled()
+                                .padding(8).background(Color(white: 0.12)).clipShape(RoundedRectangle(cornerRadius: 8))
+                            Button("Jump") { jumpToCFGFindEntry() }.foregroundStyle(blue)
+                        }
+                        .padding(.horizontal, 30).padding(.top, 6)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .ready:
@@ -1690,8 +1812,10 @@ struct DeveloperToolSheet: View {
                             ForEach(functionListResults, id: \.address) { fn in
                                 Button {
                                     disasmVA = String(format: "0x%llx", fn.address)
+                                    cfgPicked = true
+                                    autoShowInfoOnLoad = true
+                                    cfgCallers = []; cfgCallersState = .idle
                                     showFunctionList = false
-                                    cfgFunction = nil
                                     Task { await openLocalCFG() }
                                 } label: {
                                     HStack {
@@ -1717,6 +1841,102 @@ struct DeveloperToolSheet: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showFunctionList = false } } }
         }
         .preferredColorScheme(.dark)
+    }
+
+    // MARK: Function Info — a plain-English index of what this function connects to.
+    // Every line here comes from real, already-decoded data: Capstone's instruction
+    // counts, its own resolved string/class xrefs, the real callees it dials out to,
+    // and a real cross-reference scan for who calls it. Nothing is a semantic guess
+    // about what the function "does" — just its honest connections, laid out for
+    // someone who can't read the raw ARM64 above.
+
+    private var functionInfoSheet: some View {
+        NavigationStack {
+            List {
+                if let fn = cfgFunction {
+                    Section {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(fn.name).font(.system(size: 15, weight: .bold, design: .monospaced)).foregroundStyle(Theme.text)
+                            Text(String(format: "0x%llx – 0x%llx · %lu bytes", fn.startAddress, fn.endAddress, fn.size))
+                                .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
+                            Text("\(fn.instructions.count) instructions · \(fn.basicBlockCount) basic blocks\(fn.boundaryIsBounded ? " · bounded by the next function" : "")")
+                                .font(.caption).foregroundStyle(Theme.subtle)
+                        }
+                    }.listRowBackground(Color(white: 0.08))
+
+                    Section {
+                        if cfgReferencedStrings.isEmpty {
+                            Text("No string/class references resolved in this function.").font(.caption).foregroundStyle(Theme.subtle)
+                        } else {
+                            ForEach(cfgReferencedStrings, id: \.self) { s in
+                                Text("\"\(s)\"").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                            }
+                        }
+                    } header: {
+                        Text("References — strings & classes it touches")
+                    }.listRowBackground(Color(white: 0.08))
+
+                    Section {
+                        if cfgCallTargets.isEmpty {
+                            Text("Calls nothing outside itself in this window.").font(.caption).foregroundStyle(Theme.subtle)
+                        } else {
+                            ForEach(cfgCallTargets, id: \.address) { entry in
+                                connectionRow(address: entry.address, name: entry.label)
+                            }
+                        }
+                    } header: {
+                        Text("Calls out to (\(cfgCallTargets.count))")
+                    }.listRowBackground(Color(white: 0.08))
+
+                    Section {
+                        switch cfgCallersState {
+                        case .idle, .loading:
+                            HStack { ProgressView().tint(blue); Text("Scanning __text for real callers…").font(.caption).foregroundStyle(Theme.subtle) }
+                        case .empty:
+                            Text("No `bl` anywhere in __text resolves to this address — nothing in-module calls it directly (it may be an export, a callback target, or dead code).")
+                                .font(.caption).foregroundStyle(Theme.subtle)
+                        case .ready:
+                            ForEach(cfgCallers, id: \.address) { entry in
+                                connectionRow(address: entry.address, name: entry.name)
+                            }
+                        }
+                    } header: {
+                        Text("Called from (\(cfgCallers.count))")
+                    } footer: {
+                        Text("Found by scanning every real `bl` instruction in __text — not just this function's own window.")
+                    }.listRowBackground(Color(white: 0.08))
+                } else {
+                    Text("No function loaded.").font(.caption).foregroundStyle(Theme.subtle)
+                }
+            }
+            .scrollContentBackground(.hidden).background(Color.black)
+            .navigationTitle("Function Info").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showFunctionInfo = false } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    /// A tappable row in Function Info that jumps the CFG viewer to that address —
+    /// lets you actually walk the real call graph in either direction.
+    private func connectionRow(address: UInt64, name: String) -> some View {
+        Button {
+            disasmVA = String(format: "0x%llx", address)
+            cfgPicked = true
+            autoShowInfoOnLoad = true
+            cfgCallers = []; cfgCallersState = .idle
+            showFunctionInfo = false
+            cfgFunction = nil
+            Task { await openLocalCFG() }
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                    Text(String(format: "0x%llx", address)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
+                }
+                Spacer()
+                Image(systemName: "arrow.forward.circle").foregroundStyle(blue)
+            }
+        }
     }
 
     // MARK: Strings
@@ -2140,7 +2360,15 @@ struct DeveloperToolSheet: View {
             va >= text.vmaddr && va < text.vmaddr + UInt64(text.data.count) ? va : text.vmaddr
         } ?? text.vmaddr
         let delta = Int(startVA - text.vmaddr)
-        let maxBytes = min(64 * 1024, max(0, text.data.count - delta))
+
+        // Bound the decode window to the real function this address belongs to — the
+        // next real LC_FUNCTION_STARTS entry after it — so picking a function shows
+        // exactly that function's own section of the graph, not a wall of whatever
+        // unrelated code happens to sit after it in memory. Falls back to a flat 64KB
+        // safety cap only when no function table is available (functionIndex empty).
+        let bounds = functionBounds(containing: startVA)
+        let cap = bounds.map { Int($0.end - startVA) } ?? (64 * 1024)
+        let maxBytes = min(max(cap, 4), min(64 * 1024, max(0, text.data.count - delta)))
         guard maxBytes >= 4 else {
             cfgStatus = "Not enough executable bytes for CFG analysis."
             return
@@ -2163,13 +2391,24 @@ struct DeveloperToolSheet: View {
         function.endAddress = result.instructions.last.map { $0.address + UInt64($0.size) } ?? startVA
         function.size = UInt(function.endAddress - function.startAddress)
         function.boundaryIsBounded = true
-        function.name = disasmVA.isEmpty ? "__text CFG" : "CFG @ \(disasmVA)"
+        if let b = bounds, b.start == startVA {
+            function.name = b.name
+        } else if let b = bounds {
+            function.name = String(format: "%@+0x%llx", b.name, startVA - b.start)
+        } else {
+            function.name = disasmVA.isEmpty ? "__text CFG" : "CFG @ \(disasmVA)"
+        }
         function.instructions = result.instructions
         function.basicBlocks = blocks
         function.basicBlockCount = UInt(blocks.count)
         cfgFunction = function
         cfgStatus = "Capstone · \(blocks.count) blocks · \(result.instructions.count) instructions · bounded analysis window"
         showCFGViewer = true
+        if autoShowInfoOnLoad {
+            autoShowInfoOnLoad = false
+            showFunctionInfo = true
+            Task { await loadCallers(of: function.startAddress) }
+        }
     }
 
     private func patchFunc(ret: Bool) async {
