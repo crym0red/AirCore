@@ -1394,12 +1394,31 @@ struct DeveloperToolSheet: View {
     @State private var cfgCallersState: FunctionIndexState = .idle
     @State private var cfgRefStrings: [String] = []
     @State private var cfgRefSelectors: [String] = []
+    @State private var cfgRefClasses: [String] = []
+    @State private var symbolTable: [UInt64: String] = [:]
     @State private var showStringIndex = false
     @State private var stringIndexQuery = ""
     @State private var stringIndex: [(address: UInt64, name: String, refs: [String])] = []
     @State private var stringIndexState: FunctionIndexState = .idle
     @State private var stringIndexProgress: Double = 0
+    @State private var patchPreview: PatchPreview?
     enum FunctionIndexState: Equatable { case idle, loading, ready, empty }
+
+    /// What a NOP/RET patch would actually do, shown before it's queued: the
+    /// real original instruction (decoded fresh from the real bytes at that
+    /// file offset, not assumed), the real replacement bytes, and the exact
+    /// file offset being written. No patch reaches `patches` without passing
+    /// through this.
+    struct PatchPreview: Identifiable {
+        let id = UUID()
+        let va: UInt64
+        let fileOffset: Int
+        let ret: Bool
+        let originalBytes: [UInt8]
+        let originalText: String
+        let newBytes: [UInt8]
+        let newText: String
+    }
 
     private var blue: Color { Theme.accent }
 
@@ -1491,6 +1510,7 @@ struct DeveloperToolSheet: View {
                 Color.black
             }
         }
+        .sheet(item: $patchPreview) { _ in patchPreviewSheet }
     }
 
     private var title: String {
@@ -1678,7 +1698,7 @@ struct DeveloperToolSheet: View {
         disasmVA = "0x\(raw)"
         cfgPicked = true
         autoShowInfoOnLoad = true
-        cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []
+        cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []; cfgRefClasses = []
         showCFGFind = false
         showFunctionList = false
         cfgFunction = nil
@@ -1702,6 +1722,7 @@ struct DeveloperToolSheet: View {
             return
         }
         let symbols = MachOTools.symbolMap(in: ctx.thin)
+        symbolTable = symbols   // cached for class-name resolution (see `references(for:...)`) — not just function names
         functionIndex = starts.map { addr in
             (address: addr, name: symbols[addr] ?? String(format: "sub_%llx", addr))
         }
@@ -1825,24 +1846,51 @@ struct DeveloperToolSheet: View {
         return nil
     }
 
-    /// Splits resolved references into plain strings vs. ObjC selectors, using
-    /// the real section the computed address falls in — `__objc_selrefs`
-    /// entries are ABI-guaranteed to point straight at a selector name, so a
-    /// resolved hit there is labeled a selector; everything else is a string.
-    private func references(for instrs: [UCDisasmInstruction], thin: Data, sections: [MachOTools.Section], segments: [MachOTools.Segment]) -> (strings: [String], selectors: [String]) {
-        var strings: [String] = [], selectors: [String] = []
-        var seenS = Set<String>(), seenSel = Set<String>()
+    /// Resolves an `__objc_classrefs` slot to the real class name it points
+    /// to, with zero struct-layout guessing: a classref slot holds a pointer
+    /// to a `class_t` struct, and for any class actually DEFINED in this
+    /// binary, LC_SYMTAB already exports a `_OBJC_CLASS_$_<Name>` (or
+    /// `_OBJC_METACLASS_$_<Name>`) symbol whose address is exactly that same
+    /// `class_t` pointer — so one pointer dereference plus a lookup in the
+    /// already-built `symbolTable` gives the real name, straight from the
+    /// linker's own symbol table. Classes imported from elsewhere (not
+    /// defined here) have no such local symbol and are left unresolved
+    /// rather than guessed at.
+    private func resolveClassRef(at va: UInt64, thin: Data, segments: [MachOTools.Segment]) -> String? {
+        guard let classT = MachOTools.pointer(in: thin, segments: segments, at: va),
+              let sym = symbolTable[classT] else { return nil }
+        if sym.hasPrefix("_OBJC_METACLASS_$_") { return sym.replacingOccurrences(of: "_OBJC_METACLASS_$_", with: "") + " (metaclass)" }
+        if sym.hasPrefix("_OBJC_CLASS_$_") { return sym.replacingOccurrences(of: "_OBJC_CLASS_$_", with: "") }
+        return nil
+    }
+
+    /// Splits resolved references into plain strings, ObjC selectors, and ObjC
+    /// class names, using the real section the computed address falls in:
+    /// `__objc_selrefs` entries are ABI-guaranteed to point straight at a
+    /// selector name, so a resolved hit there is labeled a selector;
+    /// `__objc_classrefs` entries are resolved via `resolveClassRef`; anything
+    /// else that resolves to printable text is a string.
+    private func references(for instrs: [UCDisasmInstruction], thin: Data, sections: [MachOTools.Section], segments: [MachOTools.Segment]) -> (strings: [String], selectors: [String], classes: [String]) {
+        var strings: [String] = [], selectors: [String] = [], classes: [String] = []
+        var seenS = Set<String>(), seenSel = Set<String>(), seenC = Set<String>()
         for va in Self.adrpTargets(in: instrs) {
-            guard let resolved = resolveReference(at: va, thin: thin, segments: segments) else { continue }
             let inSelRefs = sections.contains { $0.name == "__objc_selrefs" && va >= $0.addr && va < $0.addr + $0.size }
+            let inClassRefs = sections.contains { $0.name == "__objc_classrefs" && va >= $0.addr && va < $0.addr + $0.size }
+            if inClassRefs {
+                if let cls = resolveClassRef(at: va, thin: thin, segments: segments), seenC.insert(cls).inserted {
+                    classes.append(cls)
+                }
+                continue
+            }
+            guard let resolved = resolveReference(at: va, thin: thin, segments: segments) else { continue }
             if inSelRefs {
                 if seenSel.insert(resolved).inserted { selectors.append(resolved) }
             } else {
                 if seenS.insert(resolved).inserted { strings.append(resolved) }
             }
-            if strings.count + selectors.count >= 24 { break }
+            if strings.count + selectors.count + classes.count >= 24 { break }
         }
-        return (strings, selectors)
+        return (strings, selectors, classes)
     }
 
     // MARK: String/selector search across every real function
@@ -1874,7 +1922,7 @@ struct DeveloperToolSheet: View {
                 let window = text.data.subdata(in: delta ..< delta + cap)
                 if let result = UCDisassembler.sharedInstance().disassembleData(window, baseAddress: fn.address) {
                     let refs = references(for: result.instructions, thin: ctx.thin, sections: ctx.sections, segments: ctx.segments)
-                    let all = refs.strings + refs.selectors.map { "@selector(\($0))" }
+                    let all = refs.strings + refs.selectors.map { "@selector(\($0))" } + refs.classes.map { "class \($0)" }
                     if !all.isEmpty { out.append((fn.address, fn.name, all)) }
                 }
             }
@@ -1924,7 +1972,7 @@ struct DeveloperToolSheet: View {
                                     disasmVA = String(format: "0x%llx", entry.address)
                                     cfgPicked = true
                                     autoShowInfoOnLoad = true
-                                    cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []
+                                    cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []; cfgRefClasses = []
                                     showStringIndex = false
                                     Task { await openLocalCFG() }
                                 } label: {
@@ -1995,7 +2043,7 @@ struct DeveloperToolSheet: View {
                                     disasmVA = String(format: "0x%llx", fn.address)
                                     cfgPicked = true
                                     autoShowInfoOnLoad = true
-                                    cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []
+                                    cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []; cfgRefClasses = []
                                     showFunctionList = false
                                     Task { await openLocalCFG() }
                                 } label: {
@@ -2044,10 +2092,10 @@ struct DeveloperToolSheet: View {
                                 .font(.caption).foregroundStyle(Theme.subtle)
                         }
                         HStack(spacing: 10) {
-                            Button { Task { await patchAt(va: fn.startAddress, ret: false) } } label: {
+                            Button { Task { await preparePatchPreview(va: fn.startAddress, ret: false) } } label: {
                                 Label("NOP entry", systemImage: "scissors")
                             }
-                            Button { Task { await patchAt(va: fn.startAddress, ret: true) } } label: {
+                            Button { Task { await preparePatchPreview(va: fn.startAddress, ret: true) } } label: {
                                 Label("RET entry", systemImage: "arrow.uturn.backward")
                             }
                         }
@@ -2084,6 +2132,20 @@ struct DeveloperToolSheet: View {
                         Text("Objective-C messages sent")
                     } footer: {
                         Text("Every adrp+ldr pair whose slot lands in __objc_selrefs — the ABI guarantees that table only ever holds selector names, so this is real, not a guess at which bl is objc_msgSend.")
+                    }.listRowBackground(Color(white: 0.08))
+
+                    Section {
+                        if cfgRefClasses.isEmpty {
+                            Text("No Objective-C classes resolved in this function.").font(.caption).foregroundStyle(Theme.subtle)
+                        } else {
+                            ForEach(cfgRefClasses, id: \.self) { c in
+                                Text(c).font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                            }
+                        }
+                    } header: {
+                        Text("Objective-C classes")
+                    } footer: {
+                        Text("From __objc_classrefs slots matched against this class's real _OBJC_CLASS_$_ symbol in LC_SYMTAB — only resolves classes actually defined in this binary, not ones it merely imports.")
                     }.listRowBackground(Color(white: 0.08))
 
                     Section {
@@ -2133,7 +2195,7 @@ struct DeveloperToolSheet: View {
             disasmVA = String(format: "0x%llx", address)
             cfgPicked = true
             autoShowInfoOnLoad = true
-            cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []
+            cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []; cfgRefClasses = []
             showFunctionInfo = false
             cfgFunction = nil
             Task { await openLocalCFG() }
@@ -2615,6 +2677,7 @@ struct DeveloperToolSheet: View {
         let refs = references(for: result.instructions, thin: ctx.thin, sections: ctx.sections, segments: ctx.segments)
         cfgRefStrings = refs.strings
         cfgRefSelectors = refs.selectors
+        cfgRefClasses = refs.classes
         cfgStatus = "Capstone · \(blocks.count) blocks · \(result.instructions.count) instructions · bounded analysis window"
         showCFGViewer = true
         if autoShowInfoOnLoad {
@@ -2626,24 +2689,101 @@ struct DeveloperToolSheet: View {
 
     private func patchFunc(ret: Bool) async {
         guard let va = UInt64(disasmVA.replacingOccurrences(of: "0x", with: ""), radix: 16) else { return }
-        await patchAt(va: va, ret: ret)
+        await preparePatchPreview(va: va, ret: ret)
     }
 
-    /// Queues a real NOP/RET patch at an arbitrary address — the same logic
-    /// `patchFunc(ret:)` uses for the typed-VA field in Patch Functions, just
-    /// callable directly from the CFG viewer so picking a function's entry
-    /// point there and patching it is one tap instead of copying the address
-    /// over to a separate screen.
-    private func patchAt(va: UInt64, ret: Bool) async {
+    /// Builds a real preview of what a NOP/RET patch at `va` would do —
+    /// decoding the actual current bytes at that exact file offset (fresh
+    /// Capstone decode, not assumed) so the original instruction shown is
+    /// the real one sitting there right now, not a label. Nothing is queued
+    /// here; `commitPatch` does that only after the user confirms.
+    private func preparePatchPreview(va: UInt64, ret: Bool) async {
         guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil),
-              let off = MachOTools.fileOffset(forVA: va, segments: ctx.segments) else { return }
+              let off = MachOTools.fileOffset(forVA: va, segments: ctx.segments) else {
+            cfgStatus = "Could not resolve a file offset for 0x\(String(va, radix: 16))."
+            return
+        }
+        guard off + 4 <= ctx.thin.count else {
+            cfgStatus = "That address falls outside the binary's mapped bytes."
+            return
+        }
+        let origBytes = Array(ctx.thin[off ..< off + 4])
         // NOP = 0x1F2003D5 (little-endian D503201F), RET = 0xC0035FD6.
-        let bytes: [UInt8] = ret ? [0xC0, 0x03, 0x5F, 0xD6] : [0x1F, 0x20, 0x03, 0xD5]
-        let orig = off + 4 <= ctx.thin.count ? Array(ctx.thin[off ..< off + 4]) : []
-        let label = "\(ret ? "RET" : "NOP") @ \(String(format: "0x%llx", va))"
-        let p = BinaryPatch(label: label, fileOffset: off, bytes: bytes, original: orig)
-        patches.removeAll { $0.fileOffset == off }
-        patches.append(p)
+        let newBytes: [UInt8] = ret ? [0xC0, 0x03, 0x5F, 0xD6] : [0x1F, 0x20, 0x03, 0xD5]
+        let origData = Data(origBytes)
+        let origText: String
+        if let result = UCDisassembler.sharedInstance().disassembleData(origData, baseAddress: va),
+           let first = result.instructions.first {
+            origText = first.fullText
+        } else {
+            origText = "(could not decode — raw bytes shown below)"
+        }
+        let newData = Data(newBytes)
+        let newText: String
+        if let result = UCDisassembler.sharedInstance().disassembleData(newData, baseAddress: va),
+           let first = result.instructions.first {
+            newText = first.fullText
+        } else {
+            newText = ret ? "ret" : "nop"
+        }
+        patchPreview = PatchPreview(va: va, fileOffset: off, ret: ret, originalBytes: origBytes, originalText: origText, newBytes: newBytes, newText: newText)
+    }
+
+    /// Actually queues the patch the user just confirmed in the preview sheet
+    /// — identical write `patchAt` used to do immediately, just moved behind
+    /// the confirm step so nothing lands in `patches` unseen.
+    private func commitPatch(_ p: PatchPreview) {
+        let label = "\(p.ret ? "RET" : "NOP") @ \(String(format: "0x%llx", p.va))"
+        let patch = BinaryPatch(label: label, fileOffset: p.fileOffset, bytes: p.newBytes, original: p.originalBytes)
+        patches.removeAll { $0.fileOffset == p.fileOffset }
+        patches.append(patch)
+        patchPreview = nil
+    }
+
+    private func hex(_ bytes: [UInt8]) -> String {
+        bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+
+    private var patchPreviewSheet: some View {
+        Group {
+            if let p = patchPreview {
+                NavigationStack {
+                    List {
+                        Section("Address") {
+                            Text(String(format: "0x%llx", p.va)).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text)
+                            Text("File offset \(p.fileOffset) (0x\(String(p.fileOffset, radix: 16)))").font(.caption).foregroundStyle(Theme.subtle)
+                        }.listRowBackground(Color(white: 0.08))
+
+                        Section("Original instruction — real bytes currently on disk") {
+                            Text(p.originalText).font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.text)
+                            Text(hex(p.originalBytes)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
+                        }.listRowBackground(Color(white: 0.08))
+
+                        Section("Proposed replacement") {
+                            Text(p.newText).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(.orange)
+                            Text(hex(p.newBytes)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle)
+                        } footer: {
+                            Text("Queuing writes these exact 4 bytes over the original at the file offset above. The patch doesn't touch the binary until you sign — you can still remove it from the Pending patches list before then.")
+                        }.listRowBackground(Color(white: 0.08))
+
+                        Section {
+                            Button(role: .destructive) { patchPreview = nil } label: {
+                                Label("Cancel", systemImage: "xmark")
+                            }
+                            Button { commitPatch(p) } label: {
+                                Label("Queue Patch", systemImage: "checkmark.seal")
+                            }.foregroundStyle(blue)
+                        }.listRowBackground(Color(white: 0.08))
+                    }
+                    .scrollContentBackground(.hidden).background(Color.black)
+                    .navigationTitle("Verify Patch").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { patchPreview = nil } } }
+                }
+                .preferredColorScheme(.dark)
+            } else {
+                EmptyView()
+            }
+        }
     }
 }
 
