@@ -70,7 +70,7 @@ final class AppTheme: ObservableObject {
     @Published var particleTouch: ParticleTouchMode { didSet { d.set(particleTouch.rawValue, forKey: "as_p_touch") } }
 
     /// Auto-cycle: `.background` drifts only the particle/grid layer (smooth, no re-skin);
-    /// `.app` steps the real accent every 10 s and rotates the bottom tabs, without closing anything you have open.
+    /// `.app` steps the real accent every 10 s, recoloring live without closing anything you have open.
     @Published var cycleMode: CycleMode { didSet { d.set(cycleMode.rawValue, forKey: "as_cycle"); restartCycle() } }
     private var cycleTask: Task<Void, Never>?
 

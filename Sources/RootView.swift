@@ -29,18 +29,6 @@ struct RootView: View {
         var id: String { url.path }
     }
 
-    /// True when a sheet / full-screen cover / alert is on screen, or the user is typing.
-    private static func modalIsOpen() -> Bool {
-        guard let w = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first,
-              let root = w.rootViewController else { return false }
-        if root.presentedViewController != nil { return true }
-        func typing(_ v: UIView) -> Bool {
-            if v.isFirstResponder && v is UITextInput { return true }
-            return v.subviews.contains { typing($0) }
-        }
-        return typing(w)
-    }
-
     var body: some View {
         ZStack {
             switch tab {
@@ -86,16 +74,6 @@ struct RootView: View {
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: theme.panelShown)
 
-        .task(id: theme.cycleMode) {                          // Auto-cycle "Whole app": rotate tabs every 10 s (never while something is open)
-            guard theme.cycleMode == .app else { return }
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                if Task.isCancelled { return }
-                if !Self.modalIsOpen() && !account.panelShown && !theme.panelShown {
-                    withAnimation(.easeInOut(duration: 0.25)) { tab = (tab + 1) % 5 }
-                }
-            }
-        }
         .task {
             theme.startCycleIfNeeded()
             await account.autoLoginIfNeeded()          // recognized ADID + device key → signed in, no password

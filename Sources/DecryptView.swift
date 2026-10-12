@@ -327,7 +327,7 @@ struct DecryptView: View {
                 .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 24)
             }
             .safeAreaInset(edge: .top, spacing: 0) {
-                TabTitleBar(title: "Decrypt") {
+                TabTitleBar(title: "Decrypt", custom: AnyView(botTitle)) {
                     HStack(spacing: 14) {
                         Button { openSearch() } label: {
                             Image(systemName: "magnifyingglass").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.accent)
@@ -364,6 +364,30 @@ struct DecryptView: View {
         let num = m[r].filter { $0.isNumber || $0 == "." }
         guard let v = Double(num) else { return nil }
         return Swift.min(Swift.max(v, 0), 100) / 100
+    }
+
+    /// Title: bot icon in a square + "FastDecryptBot". Tapping opens the bot in Telegram.
+    private var botTitle: some View {
+        Button {
+            if let u = URL(string: "https://t.me/FastDecryptBot") { UIApplication.shared.open(u) }
+        } label: {
+            HStack(spacing: 8) {
+                Group {
+                    if UIImage(named: "fastdecrypt_logo") != nil {
+                        Image("fastdecrypt_logo").resizable().scaledToFill()
+                    } else {
+                        ZStack { Color(red: 0.55, green: 0.08, blue: 0.08); Image(systemName: "lock.open.fill").foregroundStyle(.white) }
+                    }
+                }
+                .frame(width: 28, height: 28)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                Text("FastDecryptBot").font(.system(size: 18, weight: .bold)).foregroundStyle(Theme.text)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open FastDecryptBot in Telegram")
     }
 
     // MARK: Cards

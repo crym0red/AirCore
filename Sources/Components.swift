@@ -30,13 +30,18 @@ struct TabTitleBar<Trailing: View>: View {
     @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     let title: String
     var center: String? = nil            // second-row caption, e.g. "3 Apps"
+    var custom: AnyView? = nil           // replaces the centered title text (e.g. icon + tappable name)
     @ViewBuilder var trailing: Trailing
     var body: some View {
         VStack(spacing: 0) {
             // Row 1: palette · title (centered) · tab actions
             ZStack {
-                Text(title).font(.system(size: 20, weight: .bold)).foregroundStyle(Theme.text).lineLimit(1)
-                    .frame(maxWidth: .infinity).padding(.horizontal, 90)
+                if let custom {
+                    custom.frame(maxWidth: .infinity).padding(.horizontal, 56)
+                } else {
+                    Text(title).font(.system(size: 20, weight: .bold)).foregroundStyle(Theme.text).lineLimit(1)
+                        .frame(maxWidth: .infinity).padding(.horizontal, 90)
+                }
                 HStack(spacing: 10) {
                     ThemePaletteButton()
                     Spacer()
