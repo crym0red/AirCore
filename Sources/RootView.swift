@@ -41,6 +41,16 @@ struct RootView: View {
         }
         .id(theme.revision)                                   // re-skin every tab on a theme change
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .simultaneousGesture(                                 // finger drives the particle layer (grab / repulse / attract + tap burst)
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                .onChanged { ParticleTouch.point = $0.location }
+                .onEnded { v in
+                    ParticleTouch.point = nil
+                    if abs(v.translation.width) < 8 && abs(v.translation.height) < 8 {
+                        ParticleTouch.pulse = (v.location, Date.timeIntervalSinceReferenceDate)
+                    }
+                }
+        )
         .overlay(ThemeBackgroundLayer())                      // particle/grid network floats over the tab content
         .overlay(alignment: .topTrailing) {                   // user dropdown (account chip → panel)
             if account.panelShown {

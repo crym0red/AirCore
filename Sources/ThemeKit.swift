@@ -19,6 +19,22 @@ enum ThemeBackground: String, CaseIterable, Identifiable {
     }
 }
 
+enum ParticleTouchMode: String, CaseIterable, Identifiable {
+    case grab, repulse, attract, off
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var icon: String {
+        switch self { case .grab: return "hand.point.up.left.fill"; case .repulse: return "arrow.up.left.and.arrow.down.right"
+                      case .attract: return "arrow.down.right.and.arrow.up.left"; case .off: return "nosign" }
+    }
+}
+
+/// Finger position shared with the particle layer (read every frame, no SwiftUI invalidation).
+final class ParticleTouch: @unchecked Sendable {
+    nonisolated(unsafe) static var point: CGPoint?
+    nonisolated(unsafe) static var pulse: (p: CGPoint, t: TimeInterval)?
+}
+
 @MainActor
 final class AppTheme: ObservableObject {
     static let shared = AppTheme()
@@ -32,7 +48,15 @@ final class AppTheme: ObservableObject {
     @Published var isDark: Bool { didSet { d.set(isDark, forKey: Theme.keyDark); bump() } }
     @Published var background: ThemeBackground { didSet { d.set(background.rawValue, forKey: Theme.keyBackground); bump() } }
 
+    /// Particle tuning. Not part of `revision`, so dragging a slider never re-skins the app.
+    @Published var particleDensity: Double { didSet { d.set(particleDensity, forKey: "as_p_density") } }
+    @Published var particleSpeed: Double { didSet { d.set(particleSpeed, forKey: "as_p_speed") } }
+    @Published var particleTouch: ParticleTouchMode { didSet { d.set(particleTouch.rawValue, forKey: "as_p_touch") } }
+
     private init() {
+        particleDensity = (d.object(forKey: "as_p_density") as? Double) ?? 1.0
+        particleSpeed   = (d.object(forKey: "as_p_speed") as? Double) ?? 1.0
+        particleTouch   = ParticleTouchMode(rawValue: d.string(forKey: "as_p_touch") ?? "") ?? .grab
         accentHex  = Theme.accentHex
         isDark     = Theme.isDark
         background = ThemeBackground(rawValue: d.string(forKey: Theme.keyBackground) ?? "") ?? .particles
@@ -153,6 +177,37 @@ struct ThemePanel: View {
             }
             .buttonStyle(.plain)
 
+            if theme.background == .particles || theme.background == .grid {
+                VStack(spacing: 6) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "circle.grid.3x3.fill").font(.system(size: 11)).foregroundStyle(Theme.subtle).frame(width: 18)
+                        Text("Density").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.subtle).frame(width: 52, alignment: .leading)
+                        Slider(value: $theme.particleDensity, in: 0.3...2).tint(Theme.accent)
+                    }
+                    HStack(spacing: 8) {
+                        Image(systemName: "speedometer").font(.system(size: 11)).foregroundStyle(Theme.subtle).frame(width: 18)
+                        Text("Speed").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.subtle).frame(width: 52, alignment: .leading)
+                        Slider(value: $theme.particleSpeed, in: 0.2...3).tint(Theme.accent)
+                    }
+                    Menu {
+                        ForEach(ParticleTouchMode.allCases) { m in
+                            Button { theme.particleTouch = m } label: { Label(m.title, systemImage: m == theme.particleTouch ? "checkmark" : m.icon) }
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: theme.particleTouch.icon).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.accent).frame(width: 18)
+                            Text("Touch").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.subtle)
+                            Spacer(minLength: 4)
+                            Text(theme.particleTouch.title).font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.text)
+                            Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.subtle)
+                        }
+                        .padding(.horizontal, 0).frame(height: 26).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .transition(.opacity)
+            }
+
             // Light / dark
             HStack(spacing: 8) {
                 Image(systemName: theme.isDark ? "moon.fill" : "sun.max.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.accent).frame(width: 18)
@@ -238,31 +293,84 @@ private struct HueWheel: View {
 
 // MARK: - Backgrounds
 
-/// Drifting node network (AirShare look) tinted with the accent. Non-interactive.
+// MARK: - Shared timeline
+
+struct BGTick { let date: Date }
+
+/// One clock for the background. Pauses (still frame) when the app is inactive, Low Power Mode is on
+/// or Reduce Motion is enabled, and is rasterized on the GPU so scrolling stays smooth.
+struct BGTimeline<Content: View>: View {
+    @Environment(\.scenePhase) private var phase
+    var fps: Double = 30
+    @ViewBuilder let content: (BGTick) -> Content
+    private var paused: Bool {
+        phase != .active || ProcessInfo.processInfo.isLowPowerModeEnabled || UIAccessibility.isReduceMotionEnabled
+    }
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / fps, paused: paused)) { tl in
+            content(BGTick(date: tl.date))
+        }
+        .drawingGroup()
+    }
+}
+
+// MARK: - Particles (advanced)
+
+/// particles.js-style network: depth layers (size / speed / brightness), twinkle, density by screen area,
+/// distance-faded links, and finger interaction (grab / repulse / attract) plus a tap burst.
 struct ParticleBackground: View {
     var accent: Color = Theme.accent
-    var count: Int = 44
+    var density: Double = 1
+    var speed: Double = 1
+    var touch: ParticleTouchMode = .grab
     var linkDistance: CGFloat = 120
 
-    /// Reference box so the Canvas closure can advance the simulation without state churn.
     private final class Sim {
-        struct Node { var x: CGFloat; var y: CGFloat; var vx: CGFloat; var vy: CGFloat }
+        struct Node { var x: CGFloat; var y: CGFloat; var vx: CGFloat; var vy: CGFloat
+                      var ox: CGFloat = 0; var oy: CGFloat = 0      // finger-driven offset velocity (decays)
+                      var z: CGFloat; var phase: Double }
         var nodes: [Node] = []
         var last: Date = .now
+        var lastPulse: TimeInterval = 0
 
-        func step(to date: Date, in size: CGSize, count: Int) -> [Node] {
+        func step(to date: Date, size: CGSize, count: Int, speed: CGFloat, touch: ParticleTouchMode) -> [Node] {
             if nodes.count != count {
-                nodes = (0..<count).map { _ in
-                    Node(x: .random(in: 0...max(size.width, 1)), y: .random(in: 0...max(size.height, 1)),
-                         vx: .random(in: -14...14), vy: .random(in: -14...14))
+                if nodes.count > count { nodes.removeLast(nodes.count - count) }
+                while nodes.count < count {
+                    nodes.append(Node(x: .random(in: 0...Swift.max(size.width, 1)), y: .random(in: 0...Swift.max(size.height, 1)),
+                                      vx: .random(in: -16...16), vy: .random(in: -16...16),
+                                      z: .random(in: 0.35...1), phase: .random(in: 0...(2 * .pi))))
                 }
             }
-            let dt = CGFloat(min(max(date.timeIntervalSince(last), 0), 0.1))
+            let dt = CGFloat(Swift.min(Swift.max(date.timeIntervalSince(last), 0), 0.1))
             last = date
+            let tp = ParticleTouch.point
+            var burst: (p: CGPoint, t: TimeInterval)? = nil
+            if let pl = ParticleTouch.pulse, pl.t != lastPulse { burst = pl; lastPulse = pl.t }
+            let decay = CGFloat(exp(-2.2 * Double(dt)))
             for i in nodes.indices {
-                nodes[i].x += nodes[i].vx * dt; nodes[i].y += nodes[i].vy * dt
-                if nodes[i].x < 0 || nodes[i].x > size.width  { nodes[i].vx.negate(); nodes[i].x = min(max(nodes[i].x, 0), size.width) }
-                if nodes[i].y < 0 || nodes[i].y > size.height { nodes[i].vy.negate(); nodes[i].y = min(max(nodes[i].y, 0), size.height) }
+                var n = nodes[i]
+                if touch != .off, let tp {
+                    let dx = n.x - tp.x, dy = n.y - tp.y
+                    let dist = sqrt(dx * dx + dy * dy)
+                    if dist < 140 && dist > 0.5 {
+                        let f = (1 - dist / 140) * 420 * dt
+                        if touch == .repulse { n.ox += dx / dist * f; n.oy += dy / dist * f }
+                        else if touch == .attract { n.ox -= dx / dist * f * 0.8; n.oy -= dy / dist * f * 0.8 }
+                    }
+                }
+                if let burst {
+                    let dx = n.x - burst.p.x, dy = n.y - burst.p.y
+                    let dist = Swift.max(sqrt(dx * dx + dy * dy), 1)
+                    if dist < 190 { let f = (1 - dist / 190) * 260; n.ox += dx / dist * f; n.oy += dy / dist * f }
+                }
+                n.ox *= decay; n.oy *= decay
+                n.x += (n.vx * n.z * speed + n.ox) * dt
+                n.y += (n.vy * n.z * speed + n.oy) * dt
+                // wrap softly off-screen instead of hard bouncing
+                if n.x < -10 { n.x = size.width + 10 } else if n.x > size.width + 10 { n.x = -10 }
+                if n.y < -10 { n.y = size.height + 10 } else if n.y > size.height + 10 { n.y = -10 }
+                nodes[i] = n
             }
             return nodes
         }
@@ -270,23 +378,42 @@ struct ParticleBackground: View {
     @State private var sim = Sim()
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { tl in
+        BGTimeline(fps: 30) { tl in
             Canvas { ctx, size in
-                let ns = sim.step(to: tl.date, in: size, count: count)
-                var lines = Path()
+                let area = size.width * size.height
+                let count = Swift.max(12, Swift.min(110, Int(area / 9000 * CGFloat(density))))
+                let ns = sim.step(to: tl.date, size: size, count: count, speed: CGFloat(speed), touch: touch)
+                let t = tl.date.timeIntervalSinceReferenceDate
+                let ld2 = linkDistance * linkDistance
+                // links, faded by distance, drawn in two opacity buckets (cheap)
+                var near = Path(), far = Path()
                 for i in 0..<ns.count {
                     for j in (i + 1)..<ns.count {
                         let dx = ns[i].x - ns[j].x, dy = ns[i].y - ns[j].y
-                        let dist = sqrt(dx * dx + dy * dy)
-                        guard dist < linkDistance else { continue }
-                        lines.move(to: CGPoint(x: ns[i].x, y: ns[i].y))
-                        lines.addLine(to: CGPoint(x: ns[j].x, y: ns[j].y))
+                        let d2 = dx * dx + dy * dy
+                        guard d2 < ld2 else { continue }
+                        if d2 < ld2 * 0.42 { near.move(to: CGPoint(x: ns[i].x, y: ns[i].y)); near.addLine(to: CGPoint(x: ns[j].x, y: ns[j].y)) }
+                        else { far.move(to: CGPoint(x: ns[i].x, y: ns[i].y)); far.addLine(to: CGPoint(x: ns[j].x, y: ns[j].y)) }
                     }
                 }
-                ctx.stroke(lines, with: .color(accent.opacity(0.22)), lineWidth: 0.6)
+                ctx.stroke(far, with: .color(accent.opacity(0.10)), lineWidth: 0.5)
+                ctx.stroke(near, with: .color(accent.opacity(0.26)), lineWidth: 0.7)
+                // grab: links from the finger to nearby nodes
+                if touch == .grab, let tp = ParticleTouch.point {
+                    var g = Path()
+                    for n in ns {
+                        let dx = n.x - tp.x, dy = n.y - tp.y
+                        if dx * dx + dy * dy < 170 * 170 { g.move(to: tp); g.addLine(to: CGPoint(x: n.x, y: n.y)) }
+                    }
+                    ctx.stroke(g, with: .color(accent.opacity(0.55)), lineWidth: 0.9)
+                    ctx.fill(Path(ellipseIn: CGRect(x: tp.x - 3, y: tp.y - 3, width: 6, height: 6)), with: .color(accent.opacity(0.9)))
+                }
+                // nodes: depth-scaled size, twinkle
                 for n in ns {
-                    let r: CGFloat = 2.2
-                    ctx.fill(Path(ellipseIn: CGRect(x: n.x - r, y: n.y - r, width: r * 2, height: r * 2)), with: .color(accent.opacity(0.85)))
+                    let tw = 0.75 + 0.25 * sin(t * 1.4 + n.phase)
+                    let r = 1.2 + n.z * 1.8
+                    ctx.fill(Path(ellipseIn: CGRect(x: n.x - r * 2.4, y: n.y - r * 2.4, width: r * 4.8, height: r * 4.8)), with: .color(accent.opacity(0.07 * tw * n.z)))
+                    ctx.fill(Path(ellipseIn: CGRect(x: n.x - r, y: n.y - r, width: r * 2, height: r * 2)), with: .color(accent.opacity((0.35 + 0.6 * n.z) * tw)))
                 }
             }
         }
@@ -295,16 +422,91 @@ struct ParticleBackground: View {
     }
 }
 
-/// Static hairline grid.
+/// Living grid: lines bend away from / toward your finger, tap sends a ripple through it,
+/// intersections glow near the touch, and a soft scan band sweeps down on its own.
 struct GridBackground: View {
     var accent: Color = Theme.accent
+    var density: Double = 1
+    var speed: Double = 1
+    var touch: ParticleTouchMode = .grab
+
     var body: some View {
-        Canvas { ctx, size in
-            var p = Path()
-            let step: CGFloat = 28
-            var x: CGFloat = 0; while x <= size.width { p.move(to: CGPoint(x: x, y: 0)); p.addLine(to: CGPoint(x: x, y: size.height)); x += step }
-            var y: CGFloat = 0; while y <= size.height { p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: size.width, y: y)); y += step }
-            ctx.stroke(p, with: .color(accent.opacity(0.07)), lineWidth: 0.5)
+        BGTimeline(fps: 30) { tl in
+            Canvas { ctx, size in
+                let t = tl.date.timeIntervalSinceReferenceDate
+                let now = Date.timeIntervalSinceReferenceDate
+                let step = Swift.min(Swift.max(CGFloat(40 / density), 22), 64)
+                let cols = Int(size.width / step) + 2, rows = Int(size.height / step) + 2
+                let tp = touch == .off ? nil : ParticleTouch.point
+                let pulse = touch == .off ? nil : ParticleTouch.pulse
+                let sweepY = size.height * CGFloat((t * 0.07 * speed).truncatingRemainder(dividingBy: 1.3)) - size.height * 0.15
+
+                var pts = [CGPoint](repeating: .zero, count: cols * rows)
+                var heat = [Double](repeating: 0, count: cols * rows)
+                for r in 0..<rows {
+                    for c in 0..<cols {
+                        var x = CGFloat(c) * step, y = CGFloat(r) * step
+                        var h = 0.0
+                        // ambient shimmer
+                        x += CGFloat(sin(t * 0.6 * speed + Double(y) / 90) * 1.6)
+                        y += CGFloat(cos(t * 0.5 * speed + Double(x) / 110) * 1.6)
+                        // sweeping band
+                        let sd = Double(y - sweepY) / 55
+                        h += 0.32 * exp(-sd * sd)
+                        // finger
+                        if let tp {
+                            let dx = x - tp.x, dy = y - tp.y
+                            let d = sqrt(dx * dx + dy * dy)
+                            let f = exp(-Double(d * d) / (110 * 110))
+                            if d > 0.5 {
+                                switch touch {
+                                case .repulse: x += dx / d * CGFloat(f) * 26; y += dy / d * CGFloat(f) * 26
+                                case .attract: x -= dx / d * CGFloat(f) * 22; y -= dy / d * CGFloat(f) * 22
+                                case .grab:    x -= dx / d * CGFloat(f) * 10; y -= dy / d * CGFloat(f) * 10
+                                case .off: break
+                                }
+                            }
+                            h += f
+                        }
+                        // tap ripple
+                        if let pulse {
+                            let age = now - pulse.t
+                            if age >= 0 && age < 1.8 {
+                                let dx = x - pulse.p.x, dy = y - pulse.p.y
+                                let d = Swift.max(sqrt(dx * dx + dy * dy), 1)
+                                let ring = Double(d) - age * 340
+                                let w = exp(-(ring * ring) / (46 * 46)) * (1 - age / 1.8)
+                                x += dx / d * CGFloat(w) * 15; y += dy / d * CGFloat(w) * 15
+                                h += w * 0.9
+                            }
+                        }
+                        pts[r * cols + c] = CGPoint(x: x, y: y)
+                        heat[r * cols + c] = h
+                    }
+                }
+                var base = Path(), mid = Path(), hot = Path()
+                func seg(_ i: Int, _ j: Int) {
+                    let h = (heat[i] + heat[j]) / 2
+                    if h > 0.45 { hot.move(to: pts[i]); hot.addLine(to: pts[j]) }
+                    else if h > 0.14 { mid.move(to: pts[i]); mid.addLine(to: pts[j]) }
+                    else { base.move(to: pts[i]); base.addLine(to: pts[j]) }
+                }
+                for r in 0..<rows {
+                    for c in 0..<cols {
+                        let i = r * cols + c
+                        if c + 1 < cols { seg(i, i + 1) }
+                        if r + 1 < rows { seg(i, i + cols) }
+                    }
+                }
+                ctx.stroke(base, with: .color(accent.opacity(0.08)), lineWidth: 0.5)
+                ctx.stroke(mid, with: .color(accent.opacity(0.22)), lineWidth: 0.7)
+                ctx.stroke(hot, with: .color(accent.opacity(0.55)), lineWidth: 0.9)
+                for i in 0..<pts.count where heat[i] > 0.25 {
+                    let r: CGFloat = 1 + CGFloat(Swift.min(heat[i], 1)) * 1.8
+                    ctx.fill(Path(ellipseIn: CGRect(x: pts[i].x - r, y: pts[i].y - r, width: r * 2, height: r * 2)),
+                             with: .color(accent.opacity(Swift.min(heat[i], 1) * 0.9)))
+                }
+            }
         }
         .allowsHitTesting(false)
         .ignoresSafeArea()
@@ -316,8 +518,8 @@ struct ThemeBackgroundLayer: View {
     @ObservedObject private var theme = AppTheme.shared
     var body: some View {
         switch theme.background {
-        case .particles: ParticleBackground(accent: theme.accent)
-        case .grid:      GridBackground(accent: theme.accent)
+        case .particles: ParticleBackground(accent: theme.accent, density: theme.particleDensity, speed: theme.particleSpeed, touch: theme.particleTouch)
+        case .grid:      GridBackground(accent: theme.accent, density: theme.particleDensity, speed: theme.particleSpeed, touch: theme.particleTouch)
         case .none:      EmptyView()
         }
     }
