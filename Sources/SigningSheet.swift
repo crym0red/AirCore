@@ -1399,6 +1399,7 @@ struct DeveloperToolSheet: View {
     @State private var importMap: [UInt64: String] = [:]
     @State private var showObjCBrowser = false
     @State private var objcBrowserQuery = ""
+    @State private var selectedTweakMethods: Set<UInt64> = []
     @State private var showStringIndex = false
     @State private var stringIndexQuery = ""
     @State private var stringIndex: [(address: UInt64, name: String, refs: [String])] = []
@@ -1412,6 +1413,10 @@ struct DeveloperToolSheet: View {
     @State private var gateFinderProgress: Double = 0
     @State private var gateCandidates: [GateCandidate] = []
     @State private var batchPatchPreview: BatchPatchPreview?
+    @State private var showManifest = false
+    @State private var manifestState: FunctionIndexState = .idle
+    @State private var infoPlist: [String: Any] = [:]
+    @State private var entitlements: [String: Any] = [:]
     enum FunctionIndexState: Equatable { case idle, loading, ready, empty }
 
     /// What kind of edge a call-graph node was reached by — drives both its
@@ -1638,6 +1643,7 @@ struct DeveloperToolSheet: View {
         .sheet(isPresented: $showObjCBrowser) { objcBrowserSheet }
         .sheet(isPresented: $showGateFinder) { gateFinderSheet }
         .sheet(item: $batchPatchPreview) { b in batchPatchPreviewSheet(b) }
+        .sheet(isPresented: $showManifest) { manifestSheet }
     }
 
     /// Bottom-floating pill over the CFG graph: switch tools without leaving the
@@ -1699,6 +1705,13 @@ struct DeveloperToolSheet: View {
                 if gateFinderState == .idle { Task { await buildGateCandidates() } }
             } label: {
                 cfgToolbarIcon("flag.badge.ellipsis")
+            }
+
+            Button {
+                showManifest = true
+                if manifestState == .idle { Task { await loadManifest() } }
+            } label: {
+                cfgToolbarIcon("lock.shield")
             }
 
             Button { dismiss() } label: {
@@ -2330,27 +2343,44 @@ struct DeveloperToolSheet: View {
                     List {
                         Section {
                             ForEach(stringIndexResults, id: \.address) { entry in
-                                Button {
-                                    disasmVA = String(format: "0x%llx", entry.address)
-                                    cfgPicked = true
-                                    autoShowInfoOnLoad = true
-                                    cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []; cfgRefClasses = []
-                                    showStringIndex = false
-                                    Task { await openLocalCFG() }
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        HStack {
+                                HStack {
+                                    Button {
+                                        disasmVA = String(format: "0x%llx", entry.address)
+                                        cfgPicked = true
+                                        autoShowInfoOnLoad = true
+                                        cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []; cfgRefClasses = []
+                                        showStringIndex = false
+                                        Task { await openLocalCFG() }
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 3) {
                                             Text(entry.name).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
-                                            Spacer()
-                                            Image(systemName: "arrow.forward.circle").foregroundStyle(blue)
+                                            Text(entry.refs.prefix(3).map { "\"\($0)\"" }.joined(separator: "  "))
+                                                .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle).lineLimit(1)
                                         }
-                                        Text(entry.refs.prefix(3).map { "\"\($0)\"" }.joined(separator: "  "))
-                                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle).lineLimit(1)
                                     }
+                                    Spacer()
+                                    // Jump straight into the Call Graph centered on this function —
+                                    // same real caller/callee scan Call Graph always uses, just
+                                    // skipping the extra "open CFG, then open Call Graph" hop.
+                                    Button {
+                                        disasmVA = String(format: "0x%llx", entry.address)
+                                        cfgPicked = true
+                                        autoShowInfoOnLoad = false
+                                        cfgCallers = []; cfgCallersState = .idle; cfgRefStrings = []; cfgRefSelectors = []; cfgRefClasses = []
+                                        showStringIndex = false
+                                        Task {
+                                            await openLocalCFG()
+                                            openCallGraph()
+                                        }
+                                    } label: {
+                                        Image(systemName: "point.3.connected.trianglepath.dotted").foregroundStyle(blue)
+                                    }.buttonStyle(.plain)
                                 }
                             }
                         } header: {
                             Text("\(stringIndexResults.count) of \(stringIndex.count) functions with real references")
+                        } footer: {
+                            Text("Tap a row to open its CFG; tap the graph icon to jump straight into the Call Graph for that function instead.")
                         }.listRowBackground(Color(white: 0.08))
                     }
                     .scrollContentBackground(.hidden).background(Color.black)
@@ -2417,6 +2447,143 @@ struct DeveloperToolSheet: View {
             .background(Color.black)
             .navigationTitle("Candidate Gate Checks").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showGateFinder = false } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    // MARK: Info.plist & entitlements, with a real literal cross-reference
+    //
+    // Entitlements come straight from this binary's own LC_CODE_SIGNATURE
+    // (see `MachOTools.entitlementsPlist`) — present on any signed IPA, not
+    // just ones that still carry embedded.mobileprovision. Info.plist comes
+    // from the real file inside Payload/*.app. There is no attempt here to
+    // claim "this entitlement enables that API" — Apple doesn't publish a
+    // machine-readable version of that mapping, and guessing one would be
+    // exactly the kind of fake output this tool avoids. What IS real and
+    // checkable: whether a plist/entitlement value also appears, verbatim,
+    // as a string this binary's own code references — a literal match
+    // against the already-built String Search index, nothing inferred.
+
+    private func loadManifest() async {
+        manifestState = .loading
+        guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil) else {
+            manifestState = .empty
+            return
+        }
+        entitlements = MachOTools.entitlementsPlist(in: ctx.thin) ?? [:]
+        if let plistData = await LocalBinaryScanner.bundleFile(named: "Info.plist", ipaURL: ipaURL),
+           let plist = (try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil)) as? [String: Any] {
+            infoPlist = plist
+        } else {
+            infoPlist = [:]
+        }
+        manifestState = (infoPlist.isEmpty && entitlements.isEmpty) ? .empty : .ready
+    }
+
+    /// Flattens a plist dict/array into (key, value) rows for display —
+    /// only leaf values are shown as their own row, nested dicts recurse
+    /// with a dotted key path.
+    private func flattenedManifestPairs(_ dict: [String: Any], prefix: String = "") -> [(key: String, value: String)] {
+        var out: [(String, String)] = []
+        for (k, v) in dict.sorted(by: { $0.key < $1.key }) {
+            let fullKey = prefix.isEmpty ? k : "\(prefix).\(k)"
+            if let sub = v as? [String: Any] {
+                out.append(contentsOf: flattenedManifestPairs(sub, prefix: fullKey))
+            } else if let arr = v as? [Any] {
+                for (i, item) in arr.enumerated() {
+                    out.append(("\(fullKey)[\(i)]", (item as? String) ?? "\(item)"))
+                }
+            } else {
+                out.append((fullKey, "\(v)"))
+            }
+        }
+        return out
+    }
+
+    /// Real, literal string-match cross-reference: does this plist/entitlement
+    /// value also show up, byte-for-byte, in a real function's resolved
+    /// string/selector/class references (the index String Search already
+    /// built)? No semantic mapping, no guessing — an exact match or nothing.
+    private func manifestCrossRefs(for value: String) -> [(address: UInt64, name: String)] {
+        guard value.count >= 3 else { return [] }
+        return stringIndex.filter { $0.refs.contains(value) }.map { ($0.address, $0.name) }
+    }
+
+    private func manifestRow(_ pair: (key: String, value: String)) -> some View {
+        let refs = manifestCrossRefs(for: pair.value)
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(pair.key).font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+            Text(pair.value).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.subtle).lineLimit(2)
+            if !refs.isEmpty {
+                Text("also referenced verbatim in: \(refs.map { $0.name }.joined(separator: ", "))")
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(.orange).lineLimit(2)
+            }
+        }
+    }
+
+    private var manifestSheet: some View {
+        NavigationStack {
+            Group {
+                switch manifestState {
+                case .idle, .loading:
+                    VStack(spacing: 10) {
+                        ProgressView().tint(blue)
+                        Text("Reading Info.plist + LC_CODE_SIGNATURE entitlements…").font(.caption).foregroundStyle(Theme.subtle)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .empty:
+                    VStack(spacing: 8) {
+                        Image(systemName: "lock.slash").font(.largeTitle).foregroundStyle(Theme.subtle)
+                        Text("No Info.plist or entitlements found.").font(.subheadline).foregroundStyle(Theme.text)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .ready:
+                    List {
+                        if stringIndexState != .ready {
+                            Section {
+                                Button {
+                                    Task { await buildStringIndex() }
+                                } label: {
+                                    Label(
+                                        stringIndexState == .loading ? "Building cross-reference index… \(Int(stringIndexProgress * 100))%" : "Build cross-reference index",
+                                        systemImage: "arrow.triangle.2.circlepath"
+                                    )
+                                }.disabled(stringIndexState == .loading)
+                            } footer: {
+                                Text("Builds the same real per-function string index String Search uses, so rows below can show which function also references each value verbatim.")
+                            }.listRowBackground(Color(white: 0.08))
+                        }
+
+                        if entitlements.isEmpty {
+                            Section {
+                                Text("No entitlements blob in this binary's code signature.").font(.caption).foregroundStyle(Theme.subtle)
+                            }.listRowBackground(Color(white: 0.08))
+                        } else {
+                            Section {
+                                ForEach(flattenedManifestPairs(entitlements), id: \.key) { pair in manifestRow(pair) }
+                            } header: {
+                                Text("Entitlements (\(entitlements.count))")
+                            } footer: {
+                                Text("Parsed from this binary's own LC_CODE_SIGNATURE entitlements blob — present on any signed IPA, ad-hoc or App Store, unlike embedded.mobileprovision, which Apple strips from Store downloads.")
+                            }.listRowBackground(Color(white: 0.08))
+                        }
+
+                        if !infoPlist.isEmpty {
+                            Section {
+                                ForEach(flattenedManifestPairs(infoPlist), id: \.key) { pair in manifestRow(pair) }
+                            } header: {
+                                Text("Info.plist (\(infoPlist.count) top-level keys)")
+                            } footer: {
+                                Text("Orange rows show a real, literal match — the exact plist/entitlement value also appears as a string a function in this binary references. This is not a claim about what that entitlement unlocks, only that the same bytes appear in both places.")
+                            }.listRowBackground(Color(white: 0.08))
+                        }
+                    }
+                    .scrollContentBackground(.hidden).background(Color.black)
+                }
+            }
+            .background(Color.black)
+            .navigationTitle("Info.plist & Entitlements").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showManifest = false } } }
         }
         .preferredColorScheme(.dark)
     }
@@ -2569,18 +2736,55 @@ struct DeveloperToolSheet: View {
                 } else {
                     List {
                         Section {
+                            Button { exportClassHeaders() } label: {
+                                Label("Export all class headers (.h)", systemImage: "doc.text")
+                            }
+                            .font(.caption.weight(.semibold)).buttonStyle(.bordered).tint(blue)
+                        } footer: {
+                            Text("One .h per class listing its real, verified methods (class names and method existence are real; argument/return types are flagged `id` placeholders — selectors carry no type info, so fill in real types from a class-dump before using as a compile-ready header).")
+                        }.listRowBackground(Color(white: 0.08))
+
+                        if !selectedTweakMethods.isEmpty {
+                            Section {
+                                Button { exportSwizzleDylib() } label: {
+                                    Label("Generate swizzle dylib (\(selectedTweakMethods.count) selected)", systemImage: "hammer")
+                                }
+                                .font(.caption.weight(.semibold)).buttonStyle(.bordered).tint(blue)
+                                Button(role: .destructive) { selectedTweakMethods.removeAll() } label: {
+                                    Label("Clear selection", systemImage: "xmark.circle")
+                                }.font(.caption)
+                            } footer: {
+                                Text("Builds a clang-buildable .m/.dylib skeleton that swizzles each selected method via the Objective-C runtime (method_setImplementation) — the same pattern your other injected-dylib rebrand projects use, not a jailbreak/Theos tweak.")
+                            }.listRowBackground(Color(white: 0.08))
+                        }
+
+                        Section {
                             ForEach(objcClassGroups, id: \.cls) { group in
                                 DisclosureGroup {
                                     ForEach(group.methods, id: \.address) { m in
-                                        Button { pickObjCMethod(address: m.address) } label: {
-                                            HStack {
-                                                VStack(alignment: .leading, spacing: 2) {
-                                                    Text("\(m.isClassMethod ? "+" : "-")\(m.category.map { "(\($0)) " } ?? "")\(m.selector)")
-                                                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
-                                                    Text(String(format: "0x%llx", m.address)).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.subtle)
+                                        HStack {
+                                            Button {
+                                                if selectedTweakMethods.contains(m.address) {
+                                                    selectedTweakMethods.remove(m.address)
+                                                } else {
+                                                    selectedTweakMethods.insert(m.address)
                                                 }
-                                                Spacer()
-                                                Image(systemName: "arrow.forward.circle").foregroundStyle(blue).font(.caption)
+                                            } label: {
+                                                Image(systemName: selectedTweakMethods.contains(m.address) ? "checkmark.circle.fill" : "circle")
+                                                    .foregroundStyle(selectedTweakMethods.contains(m.address) ? blue : Theme.subtle)
+                                            }
+                                            .buttonStyle(.plain)
+
+                                            Button { pickObjCMethod(address: m.address) } label: {
+                                                HStack {
+                                                    VStack(alignment: .leading, spacing: 2) {
+                                                        Text("\(m.isClassMethod ? "+" : "-")\(m.category.map { "(\($0)) " } ?? "")\(m.selector)")
+                                                            .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                                                        Text(String(format: "0x%llx", m.address)).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.subtle)
+                                                    }
+                                                    Spacer()
+                                                    Image(systemName: "arrow.forward.circle").foregroundStyle(blue).font(.caption)
+                                                }
                                             }
                                         }
                                     }
@@ -2591,7 +2795,7 @@ struct DeveloperToolSheet: View {
                         } header: {
                             Text("\(objcMethods.count) verified methods across \(objcClassGroups.count) classes")
                         } footer: {
-                            Text("Each method is a real -[Class selector:]/+[Class selector:] LC_SYMTAB symbol confirmed as a real function entry by LC_FUNCTION_STARTS — not inferred from __objc_classlist/class_ro_t layout.")
+                            Text("Each method is a real -[Class selector:]/+[Class selector:] LC_SYMTAB symbol confirmed as a real function entry by LC_FUNCTION_STARTS — not inferred from __objc_classlist/class_ro_t layout. Tap the circle to select for the swizzle dylib generator; tap the row itself to open its CFG.")
                         }.listRowBackground(Color(white: 0.08))
                     }
                     .scrollContentBackground(.hidden).background(Color.black)
@@ -2603,6 +2807,364 @@ struct DeveloperToolSheet: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showObjCBrowser = false } } }
         }
         .preferredColorScheme(.dark)
+    }
+
+    // MARK: Class header export
+    //
+    // One .h per class, listing its real, verified methods — reusing the
+    // exact same `objcClassGroups` the browser above already built from
+    // LC_SYMTAB + LC_FUNCTION_STARTS. Class names, method existence, and
+    // instance-vs-class kind are all real. Argument/return types are NOT
+    // — selectors carry no type encoding — so every one is an explicit
+    // `id` placeholder, same honesty rule as the swizzle generator.
+
+    private func classHeaderSource(for cls: String, methods: [(address: UInt64, category: String?, isClassMethod: Bool, selector: String)]) -> String {
+        var decl = "@interface \(cls) : NSObject\n\n"
+        for m in methods.sorted(by: { $0.selector < $1.selector }) {
+            let argCount = m.selector.filter { $0 == ":" }.count
+            let sig: String
+            if argCount == 0 {
+                sig = m.selector
+            } else {
+                let parts = m.selector.split(separator: ":").map(String.init)
+                sig = parts.enumerated().map { i, part in "\(part):(id)arg\(i)" }.joined(separator: " ")
+            }
+            decl += "\(m.isClassMethod ? "+" : "-") (id)\(sig);"
+            if let cat = m.category { decl += "  // category: \(cat)" }
+            decl += "\n"
+        }
+        decl += "\n@end\n"
+        return decl
+    }
+
+    private func exportClassHeaders() {
+        guard !objcClassGroups.isEmpty else { return }
+        var files: [(String, Data)] = []
+        var combined = """
+        // Auto-generated interface stubs — \(objcMethods.count) real, verified
+        // Objective-C method symbols (each confirmed against LC_FUNCTION_STARTS)
+        // across \(objcClassGroups.count) classes, from the CFG Viewer's Classes
+        // & Methods browser.
+        //
+        // REAL: class names (from _OBJC_CLASS_$_ / method LC_SYMTAB symbols),
+        // which methods exist on each class, and instance-vs-class kind.
+        // NOT REAL — explicit placeholders: every argument/return type is
+        // `id`. Selector names carry no type information; this generator
+        // never parsed a method's real type-encoding, so treat this as a
+        // method-existence stub, not a compile-ready header, until you fill
+        // in real types from a class-dump or the real framework headers.
+        // Ivars are not included either — they weren't parsed in this pass.
+
+        #import <Foundation/Foundation.h>
+
+
+        """
+        for group in objcClassGroups {
+            let header = classHeaderSource(for: group.cls, methods: group.methods)
+            combined += header + "\n"
+            files.append(("\(group.cls).h", Data(header.utf8)))
+        }
+        files.append(("AllClasses.h", Data(combined.utf8)))
+        do {
+            let tmpDir = FileManager.default.temporaryDirectory
+            let zipURL = tmpDir.appendingPathComponent("ClassHeaders.zip")
+            try? FileManager.default.removeItem(at: zipURL)
+            guard let archive = Archive(url: zipURL, accessMode: .create) else {
+                cfgStatus = "Could not create the headers zip."
+                return
+            }
+            for (path, data) in files {
+                try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) { position, size in
+                    data.subdata(in: Int(position) ..< Int(position) + size)
+                }
+            }
+            UIActivityViewController.share(zipURL)
+        } catch {
+            cfgStatus = "Could not build the headers zip: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: Swizzle dylib generator
+    //
+    // Builds a clang-buildable Objective-C runtime swizzle skeleton — a
+    // constructor that overrides each selected method via the safe
+    // class_addMethod/class_replaceMethod pattern (NSHipster/Mike Ash's
+    // documented safe-swizzle shape), matching the same injected-rebrand-
+    // dylib pattern already used elsewhere in this ecosystem, not a
+    // jailbreak/Theos %hook tweak. Every real method picked here came from
+    // the verified -[Class selector:] LC_SYMTAB browser above, so the
+    // class/selector names are real. What's NOT real or knowable from a
+    // selector alone is argument/return TYPES — every placeholder below is
+    // `id`, loudly flagged, rather than guessed at. Everything else below
+    // — correct class-vs-metaclass lookup, not stomping an inherited
+    // superclass implementation, a no-op on re-entry, and a null-check for
+    // a selector that doesn't resolve at all — is handled for real, not
+    // just the method-body signatures.
+
+    /// A valid, unique C identifier for one method's static storage.
+    private func swizzleIdentifier(cls: String, selector: String, isClassMethod: Bool) -> String {
+        let cleaned = (cls + "_" + selector).map { c -> Character in
+            (c.isLetter || c.isNumber) ? c : "_"
+        }
+        return "\(isClassMethod ? "class" : "inst")_\(String(cleaned))"
+    }
+
+    private func swizzleSourceAndSelections() -> (source: String, count: Int)? {
+        // Dedupe by (class, selector, isClassMethod): generating two swizzle
+        // blocks for the exact same method in one constructor would make the
+        // second block's class_addMethod fail against the first block's
+        // just-added override, double-wrapping instead of cleanly failing —
+        // so only the first selection of any given method is kept.
+        var seenKeys = Set<String>()
+        let selected = objcMethods
+            .filter { selectedTweakMethods.contains($0.address) }
+            .filter { seenKeys.insert("\($0.isClassMethod)|\($0.cls)|\($0.selector)").inserted }
+        guard !selected.isEmpty else { return nil }
+        let byClass = Dictionary(grouping: selected, by: { $0.cls })
+
+        var body = ""
+        for (cls, methods) in byClass.sorted(by: { $0.key < $1.key }) {
+            body += "    // --- \(cls) ---\n"
+            for m in methods.sorted(by: { $0.selector < $1.selector }) {
+                let argCount = m.selector.filter { $0 == ":" }.count
+                let ident = swizzleIdentifier(cls: cls, selector: m.selector, isClassMethod: m.isClassMethod)
+                let blockArgs = (0..<argCount).map { "id arg\($0)" }.joined(separator: ", ")
+                let blockSig = argCount == 0 ? "id self" : "id self, \(blockArgs)"
+                let callArgs = (0..<argCount).map { ", arg\($0)" }.joined()
+                let castArgTypes = (0..<argCount).map { _ in ", id" }.joined()
+                // +methods live on the METACLASS, not the class — looking
+                // them up and class_addMethod/class_replaceMethod'ing them
+                // on `cls` itself (instead of object_getClass(cls)) would
+                // silently do nothing. targetCls below is the class the
+                // method actually needs to be added/replaced on.
+                let lookupLine = m.isClassMethod
+                    ? "Class targetCls = object_getClass(baseCls); // +methods live on the metaclass"
+                    : "Class targetCls = baseCls;"
+                body += """
+                    {
+                        Class baseCls = objc_getClass("\(cls)");
+                        if (baseCls) {
+                            \(lookupLine)
+                            SEL sel_\(ident) = @selector(\(m.selector));
+                            // class_getInstanceMethod walks the hierarchy, so this can
+                            // return an INHERITED Method — that's fine, it's only read
+                            // from here, never mutated directly.
+                            Method originalMethod_\(ident) = class_getInstanceMethod(targetCls, sel_\(ident));
+                            if (originalMethod_\(ident)) {
+                                IMP originalImp_\(ident) = method_getImplementation(originalMethod_\(ident));
+                                const char *typeEncoding_\(ident) = method_getTypeEncoding(originalMethod_\(ident));
+                                IMP newImp_\(ident) = imp_implementationWithBlock(^id(\(blockSig)) {
+                                    NSLog(@"[Swizzle] \(m.isClassMethod ? "+" : "-")[\(cls) \(m.selector)] called");
+                                    return ((id (*)(id, SEL\(castArgTypes)))originalImp_\(ident))(self, sel_\(ident)\(callArgs));
+                                });
+                                // class_addMethod only succeeds if `targetCls` does NOT
+                                // already implement this selector directly (an inherited
+                                // method doesn't count as "already implements"). If it
+                                // succeeds, the override now lives only on targetCls — the
+                                // superclass's own implementation, and every OTHER
+                                // subclass that inherits it, are untouched.
+                                // originalImp_\(ident) above was captured before this call,
+                                // so it's still the correct thing to chain to either way.
+                                BOOL addedDirectly_\(ident) = class_addMethod(targetCls, sel_\(ident), newImp_\(ident), typeEncoding_\(ident));
+                                if (!addedDirectly_\(ident)) {
+                                    // targetCls already had its OWN implementation (not
+                                    // inherited) — safe to replace it directly, since the
+                                    // Method we read from is confirmed to belong to
+                                    // targetCls itself, not a shared superclass.
+                                    class_replaceMethod(targetCls, sel_\(ident), newImp_\(ident), typeEncoding_\(ident));
+                                }
+                            } else {
+                                NSLog(@"[Swizzle] \(m.isClassMethod ? "+" : "-")[\(cls) \(m.selector)] not found at runtime — skipped (nothing was modified).");
+                            }
+                        }
+                    }
+
+                """
+            }
+        }
+
+        let source = """
+        #import <Foundation/Foundation.h>
+        #import <objc/runtime.h>
+        #import <objc/message.h>
+
+        // Auto-generated Objective-C runtime swizzle skeleton — built from
+        // \(selected.count) real, verified method symbols (each confirmed against
+        // LC_FUNCTION_STARTS, picked from the CFG Viewer's Classes & Methods
+        // browser). This is a plain clang dylib, NOT a Theos/jailbreak %hook
+        // tweak — but note what's still true of ANY dylib like this:
+        //
+        // 1) This is not self-loading. A dylib's __attribute__((constructor))
+        //    only runs once the dylib is actually LOADED into a running
+        //    process by dyld. Nothing in this zip injects it — that's this
+        //    app's own dylib-injection step (@executable_path/@rpath +
+        //    folder picker), which adds the real LC_LOAD_DYLIB entry and
+        //    re-signs the target so dyld is permitted to load it. Building
+        //    this .dylib is necessary but not sufficient.
+        // 2) Architecture must match the target slice exactly. Many modern
+        //    App Store binaries are arm64e (pointer authentication); a
+        //    plain arm64 dylib will not load into one. Check the target
+        //    with `otool -hv <binary>` and set ARCH in the Makefile to
+        //    match before building.
+        // 3) The deployment target (-miphoneos-version-min) must be <= the
+        //    target app's own minimum iOS version, or dyld can refuse to
+        //    load this dylib into it.
+        // 4) Linking: only Foundation/UIKit are linked by default. If the
+        //    REAL types you fill in below need another framework, add it
+        //    to the Makefile's -framework list — a missing framework is a
+        //    link error, not a runtime crash, so you'll see it immediately.
+        //
+        // ============================ READ THIS ============================
+        // Objective-C selector names do NOT encode argument or return types —
+        // that information lives in each method's type-encoding string, which
+        // this generator does not parse (it only had the verified symbol name
+        // to go on). EVERY argument and return value below is typed `id` as a
+        // placeholder. If the real method takes/returns a C primitive
+        // (BOOL, int, CGFloat, a struct, …), this placeholder is a silent
+        // ABI/calling-convention mismatch, not a compile error — fix the
+        // types below from a real class-dump/header before shipping this.
+        //
+        // What IS handled correctly below, independent of the type fix:
+        //   - class methods are looked up/overridden on the METACLASS
+        //     (object_getClass(cls)), not the class — a +method swizzled on
+        //     the class object itself would silently do nothing.
+        //   - an inherited method is never mutated in place: class_addMethod
+        //     is tried first, so if `targetCls` doesn't define the selector
+        //     itself, the override lands only on targetCls, leaving the
+        //     superclass (and every other subclass of it) untouched.
+        //   - the whole constructor is a no-op if it somehow runs twice in
+        //     one process (see generated_swizzle_did_run below) — swizzling
+        //     the same method pair twice would otherwise double-wrap it.
+        //   - a selector that doesn't resolve at runtime at all is logged
+        //     and skipped, never force-unwrapped into a crash.
+        // =====================================================================
+
+        static BOOL generated_swizzle_did_run = NO;
+
+        __attribute__((constructor))
+        static void generated_swizzle_init(void) {
+            // Guards against this constructor running more than once in the
+            // same process — re-swizzling the same selector pair a second
+            // time would wrap the already-wrapped IMP instead of cleanly
+            // no-op'ing, so this is a hard stop, not a courtesy check.
+            if (generated_swizzle_did_run) { return; }
+            generated_swizzle_did_run = YES;
+
+        \(body)}
+
+        """
+        return (source, selected.count)
+    }
+
+    private func exportSwizzleDylib() {
+        guard let (source, count) = swizzleSourceAndSelections() else { return }
+        let makefile = """
+        # Plain clang dylib build — not Theos. These are NOT safe defaults to
+        # build-and-ship blind; each one below must be checked against the
+        # actual target binary first:
+        #
+        #   ARCH     — must match the target executable's slice exactly.
+        #              Run `otool -hv TargetBinary` and look at the CPU
+        #              subtype: arm64e (pointer authentication) and plain
+        #              arm64 are NOT interchangeable — a mismatch fails to
+        #              load, it does not silently "mostly work".
+        #   IOS_MIN  — must be <= the target app's own deployment target,
+        #              check with `otool -l TargetBinary | grep -A3 MIN_VERSION`.
+        #
+        # Override either at build time, e.g.: make ARCH=arm64e IOS_MIN=16.0
+
+        ARCH     ?= arm64
+        IOS_MIN  ?= 14.0
+        SDK       = $(shell xcrun --sdk iphoneos --show-sdk-path)
+        TARGET    = GeneratedSwizzle.dylib
+
+        all:
+        \tclang -dynamiclib \\
+        \t\t-arch $(ARCH) \\
+        \t\t-isysroot $(SDK) \\
+        \t\t-miphoneos-version-min=$(IOS_MIN) \\
+        \t\t-framework Foundation -framework UIKit \\
+        \t\t-install_name @rpath/$(TARGET) \\
+        \t\t-o $(TARGET) GeneratedSwizzle.m
+
+        clean:
+        \trm -f $(TARGET)
+        """
+        let readme = """
+        # Generated Swizzle Dylib
+
+        Built from \(count) real, verified Objective-C method(s) picked in the
+        CFG Viewer's Classes & Methods browser — each one's class/selector name
+        came straight from a real `-[Class selector:]` / `+[Class selector:]`
+        LC_SYMTAB symbol, confirmed as a real function entry by LC_FUNCTION_STARTS.
+
+        ## What's handled correctly already
+
+        - **Class vs. instance lookup**: `+` methods are looked up and overridden
+          on the metaclass (`object_getClass(cls)`), `-` methods on the class
+          itself — swizzling a `+` method on the class object directly would
+          silently do nothing.
+        - **Inheritance**: uses the standard safe-swizzle pattern
+          (`class_addMethod` first, `class_replaceMethod` only if that fails).
+          If a selected class inherits the method rather than overriding it,
+          the new implementation is added directly on that class only — the
+          superclass, and any other subclass that also inherits it, are left
+          completely untouched.
+        - **Repeated swizzling**: the whole constructor is guarded by a
+          `generated_swizzle_did_run` flag, so if the dylib's constructor
+          somehow runs twice in one process, the second run is a no-op
+          instead of double-wrapping every hook.
+        - **Methods that don't resolve**: if a selector doesn't exist on the
+          class at runtime at all, it's logged and skipped — nothing is
+          force-unwrapped into a crash.
+
+        ## What you still have to fix before this builds or runs correctly
+
+        - **Types**: every argument/return type in `GeneratedSwizzle.m` is a
+          placeholder `id`. Selector names carry no type information — pull
+          the real types from a class-dump or header. A wrong type here is a
+          silent ABI/calling-convention mismatch, not a compile error.
+        - **Architecture**: the Makefile's `ARCH` must match the target
+          binary's real slice (arm64 vs. arm64e) — check with `otool -hv`.
+          A mismatch means dyld refuses to load this dylib at all.
+        - **Deployment target**: `IOS_MIN` must be <= the target app's own
+          minimum iOS version, or dyld can refuse to load this into it.
+        - **Linking**: only Foundation/UIKit are linked. Once you fill in
+          real types, add whatever framework those types actually need.
+        - **Loading is not automatic**: a `__attribute__((constructor))` only
+          runs once the OS has actually loaded this dylib into the target
+          process. This zip only produces the `.dylib` — getting it into the
+          target is this app's own dylib-injection step
+          (`@executable_path`/`@rpath` + the folder picker), which adds the
+          real load-command entry and re-signs the app so the OS permits
+          loading an extra, non-Apple dylib into it. Skipping that step means
+          this constructor never runs, no matter how correct the code is.
+        - Build with `make` (adjust `ARCH`/`IOS_MIN` first) via your existing
+          GitHub Actions pipeline, then drop the resulting
+          `GeneratedSwizzle.dylib` into the dylib injection picker.
+        """
+        do {
+            let tmpDir = FileManager.default.temporaryDirectory
+            let zipURL = tmpDir.appendingPathComponent("GeneratedSwizzleDylib.zip")
+            try? FileManager.default.removeItem(at: zipURL)
+            guard let archive = Archive(url: zipURL, accessMode: .create) else {
+                cfgStatus = "Could not create the dylib project zip."
+                return
+            }
+            let files: [(String, Data)] = [
+                ("GeneratedSwizzle.m", Data(source.utf8)),
+                ("Makefile", Data(makefile.utf8)),
+                ("README.md", Data(readme.utf8)),
+            ]
+            for (path, data) in files {
+                try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count)) { position, size in
+                    data.subdata(in: Int(position) ..< Int(position) + size)
+                }
+            }
+            UIActivityViewController.share(zipURL)
+        } catch {
+            cfgStatus = "Could not build the dylib project zip: \(error.localizedDescription)"
+        }
     }
 
     // MARK: Function Info — a plain-English index of what this function connects to.

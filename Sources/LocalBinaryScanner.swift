@@ -327,6 +327,48 @@ nonisolated enum MachOTools {
         return out
     }
 
+    /// Real entitlements, parsed directly from this Mach-O's own embedded
+    /// code signature (LC_CODE_SIGNATURE → the CSSLOT_ENTITLEMENTS blob
+    /// inside its SuperBlob) — the same data `codesign -d --entitlements -`
+    /// reads. Present on any signed binary, ad-hoc or App Store alike,
+    /// unlike embedded.mobileprovision, which Apple strips from Store
+    /// downloads. Unlike the rest of Mach-O, every code-signature field
+    /// here is big-endian.
+    static func entitlementsPlist(in thin: Data) -> [String: Any]? {
+        guard is64(thin) else { return nil }
+        let ncmds = Int(thin.u32le(16))
+        var off = 32
+        var dataoff = 0, datasize = 0
+        for _ in 0..<ncmds {
+            guard off + 8 <= thin.count else { break }
+            let cmd = thin.u32le(off); let size = Int(thin.u32le(off + 4))
+            guard size >= 8, off + size <= thin.count else { break }
+            if cmd == 0x1D {   // LC_CODE_SIGNATURE
+                dataoff = Int(thin.u32le(off + 8))
+                datasize = Int(thin.u32le(off + 12))
+                break
+            }
+            off += size
+        }
+        guard dataoff > 0, datasize > 12, dataoff + datasize <= thin.count else { return nil }
+        guard thin.u32be(dataoff) == 0xFADE_0CC0 else { return nil }   // CSMAGIC_EMBEDDED_SIGNATURE
+        let count = Int(thin.u32be(dataoff + 8))
+        guard count > 0, count < 64 else { return nil }
+        for i in 0..<count {
+            let entryOff = dataoff + 12 + i * 8
+            guard entryOff + 8 <= thin.count else { break }
+            let type = thin.u32be(entryOff)
+            guard type == 0xFADE_7171 else { continue }   // CSSLOT_ENTITLEMENTS (plain XML plist blob)
+            let blobStart = dataoff + Int(thin.u32be(entryOff + 4))
+            guard blobStart + 8 <= thin.count, thin.u32be(blobStart) == 0xFADE_7171 else { continue }
+            let blobLen = Int(thin.u32be(blobStart + 4))
+            guard blobLen > 8, blobStart + blobLen <= thin.count else { continue }
+            let plistData = thin.subdata(in: (blobStart + 8) ..< (blobStart + blobLen))
+            return (try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil)) as? [String: Any]
+        }
+        return nil
+    }
+
     /// Map a virtual address to a file offset *within the thin slice*.
     static func fileOffset(forVA va: UInt64, segments: [Segment]) -> Int? {
         for s in segments where va >= s.vmaddr && va < s.vmaddr + s.filesize {
