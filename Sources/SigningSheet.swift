@@ -364,11 +364,10 @@ struct SigningSheet: View {
         VStack(alignment: .leading, spacing: 6) {
             sectionLabel("DEVELOPER")
             VStack(spacing: 0) {
-                bundleRow("Search / Edit Strings", "magnifyingglass", developerStrings.isEmpty ? "View" : "\(developerStrings.count)") {
-                    developerToolMode = .strings
-                    showDeveloperTool = true
-                }
-                Divider().overlay(Theme.stroke).padding(.leading, 39)
+                // "Search / Edit Strings" and "Disassemble ARM64" moved into the
+                // CFG Viewer's own toolbar (Edit Strings; Find + the More menu's
+                // Disassembler Browser/Pseudocode/Analysis Center cover exactly
+                // what the old Disassemble ARM64 grid did) — not duplicated here.
                 bundleRow("Patch Functions", "scissors", "View") {
                     developerToolMode = .patchFunctions
                     showDeveloperTool = true
@@ -376,11 +375,6 @@ struct SigningSheet: View {
                 Divider().overlay(Theme.stroke).padding(.leading, 39)
                 bundleRow("Mach-O Dependencies", "point.3.connected.trianglepath.dotted", macho.map { "\($0.arm64?.dylibs.count ?? 0)" } ?? "0") {
                     developerToolMode = .dependencies
-                    showDeveloperTool = true
-                }
-                Divider().overlay(Theme.stroke).padding(.leading, 39)
-                bundleRow("Disassemble ARM64", "chevron.left.forwardslash.chevron.right", "View") {
-                    developerToolMode = .disassemble
                     showDeveloperTool = true
                 }
                 Divider().overlay(Theme.stroke).padding(.leading, 39)
@@ -1434,6 +1428,12 @@ struct DeveloperToolSheet: View {
     @State private var selectedTweakMethods: Set<UInt64> = []
     @State private var showStringIndex = false
     @State private var stringIndexQuery = ""
+    /// "Search / Edit Strings" pulled into the CFG toolbar — same `hits`/
+    /// `loading`/`runScan()` the standalone Developer-card tool uses, just
+    /// reachable without leaving the viewer. `stringSearchLoaded` guards
+    /// against re-running the scan every time the sheet is reopened.
+    @State private var showStringSearchTool = false
+    @State private var stringSearchLoaded = false
     @State private var stringIndex: [(address: UInt64, name: String, refs: [String])] = []
     @State private var stringIndexState: FunctionIndexState = .idle
     @State private var stringIndexProgress: Double = 0
@@ -1686,6 +1686,7 @@ struct DeveloperToolSheet: View {
         }
         .sheet(isPresented: $showFunctionInfo) { functionInfoSheet }
         .sheet(isPresented: $showStringIndex) { stringIndexSheet }
+        .sheet(isPresented: $showStringSearchTool) { stringSearchToolSheet }
         .sheet(isPresented: $showCallGraph) { callGraphSheet }
         .sheet(isPresented: $showObjCBrowser) { objcBrowserSheet }
         .sheet(isPresented: $showGateFinder) { gateFinderSheet }
@@ -1737,6 +1738,10 @@ struct DeveloperToolSheet: View {
                     cfgToolbarRow("text.magnifyingglass", "Strings") {
                         showStringIndex = true
                         if stringIndexState == .idle { Task { await buildStringIndex() } }
+                    }
+                    cfgToolbarRow("pencil.and.magnifyingglass", "Edit Strings") {
+                        showStringSearchTool = true
+                        if !stringSearchLoaded { Task { await runScan(); stringSearchLoaded = true } }
                     }
                     cfgToolbarRow("flag.badge.ellipsis", "Gates") {
                         showGateFinder = true
@@ -2473,6 +2478,34 @@ struct DeveloperToolSheet: View {
             .background(Color.black)
             .navigationTitle("String Search").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showStringIndex = false } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    /// The full editable-strings tool (category chips, search, tap-to-edit —
+    /// the same `stringsView` the standalone "Search / Edit Strings"
+    /// Developer-card entry uses) surfaced from inside the CFG toolbar, so
+    /// it's reachable without closing the viewer first.
+    private var stringSearchToolSheet: some View {
+        NavigationStack {
+            Group {
+                if loading {
+                    VStack(spacing: 18) {
+                        AirShareWatermark(size: 96)
+                        VStack(spacing: 10) {
+                            ProgressView(value: 0.5).tint(blue).frame(width: 180)
+                            Text("Scanning binary for editable strings…").font(.caption).foregroundStyle(Theme.subtle)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    stringsView
+                }
+            }
+            .background(Color.black)
+            .navigationTitle("Search / Edit Strings").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { showStringSearchTool = false } } }
+            .modifier(StringSearchable(mode: .strings, text: $query))
         }
         .preferredColorScheme(.dark)
     }
