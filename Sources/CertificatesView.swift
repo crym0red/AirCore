@@ -133,7 +133,7 @@ struct CertificatesScreen: View {
         let known = CertificateStore.knownUDID(certName: store.active?.name)
         return Card {
             VStack(alignment: .leading, spacing: 10) {
-                Label("This device", systemImage: "iphone.gen3").font(.headline).foregroundStyle(Theme.text)
+                HStack(spacing: 8) { PhoneIcon(height: 24); Text("This device").font(.headline).foregroundStyle(Theme.text) }
                 Text("Development/ad-hoc profiles only install on devices listed inside them. Enter your UDID once and every profile below shows whether it includes this device. (If your cert is named after your UDID, it's detected automatically.)")
                     .font(.caption).foregroundStyle(Theme.subtle)
                 HStack(spacing: 8) {

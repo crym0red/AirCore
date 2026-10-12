@@ -64,7 +64,7 @@ struct AccountDropdown: View {
     @State private var password = ""
     @State private var confirmLogout = false
 
-    private var accountUDID: String { CertificateStore.knownUDID() ?? "" }
+    private var accountUDID: String { CertificateStore.knownUDID(certName: CertificateStore.shared.active?.name) ?? "" }
 
     private var role: UserRole { staff.isStaff ? staff.role : account.role }
     private var signsToday: Int {
@@ -178,9 +178,7 @@ struct AccountDropdown: View {
             Divider().overlay(Theme.stroke)
 
             HStack(spacing: 10) {
-                Image(systemName: "iphone.gen3")
-                    .foregroundStyle(Theme.accent)
-                    .frame(width: 22)
+                PhoneIcon(height: 30).frame(width: 22)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("UDID")
                         .font(.system(size: 9, weight: .heavy, design: .monospaced))

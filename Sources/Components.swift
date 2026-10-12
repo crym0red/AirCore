@@ -190,3 +190,16 @@ struct TopBar: View {
 
 /// Identifiable URL wrapper for .sheet(item:).
 struct URLItem: Identifiable { let url: URL; var id: String { url.path } }
+
+// MARK: - Phone icon (the iPhone render used in onboarding)
+
+struct PhoneIcon: View {
+    var height: CGFloat = 30
+    var body: some View {
+        if UIImage(named: "iphone_render") != nil {
+            Image("iphone_render").resizable().scaledToFit().frame(height: height)
+        } else {
+            Image(systemName: "iphone.gen3").font(.system(size: height * 0.6, weight: .semibold)).foregroundStyle(Theme.accent)
+        }
+    }
+}

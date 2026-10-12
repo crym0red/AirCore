@@ -23,7 +23,7 @@ struct AccountScreen: View {
     @State private var confirAirShareOut = false
     @State private var draft: UserStyle = ZefvAccount.shared.style
     @State private var pickedColor: Color = Theme.accent
-    @AppStorage("msign_show_account_options") private var showAccountOptions = true
+    @AppStorage("as_profile_settings_open") private var showAccountOptions = false
 
     private var role: UserRole { staff.isStaff ? staff.role : account.role }
 
@@ -32,6 +32,9 @@ struct AccountScreen: View {
             Theme.bg.ignoresSafeArea()
             ThemeBackgroundLayer()
             if account.isLoggedIn { userSettings } else { ZefvAccountScreen(mode: .signIn, dismissOnSuccess: false) }
+        }
+        .overlay(alignment: .topTrailing) {
+            if !account.isLoggedIn { closeButton.padding(.top, 8).padding(.trailing, 16) }
         }
         .preferredColorScheme(AppTheme.shared.colorScheme)
         .task {
@@ -47,6 +50,7 @@ struct AccountScreen: View {
         .sheet(isPresented: $showMembers) { AdminMembersSheet().preferredColorScheme(AppTheme.shared.colorScheme) }
         .onChange(of: account.email) { email = $0 ?? "" }
         .onChange(of: account.style) { draft = $0 }
+        .onReceive(CertificateStore.shared.$certificates) { _ in refreshAccountUDID() }
     }
 
     // MARK: - User settings
@@ -54,6 +58,13 @@ struct AccountScreen: View {
     private var userSettings: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 14) {
+                // Header: title + close
+                HStack {
+                    Text("Profile").font(.system(size: 22, weight: .bold)).foregroundStyle(Theme.text)
+                    Spacer()
+                    closeButton
+                }
+                .padding(.top, 4)
                 // Identity card
                 VStack(spacing: 12) {
                     ZStack {
@@ -135,10 +146,7 @@ struct AccountScreen: View {
                         }
                     } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: "iphone.gen3")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(Theme.accent)
-                                .frame(width: 24)
+                            PhoneIcon(height: 34).frame(width: 24)
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("UDID")
@@ -166,22 +174,20 @@ struct AccountScreen: View {
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 22)
                 .background(ProfileBackdrop(style: account.style))
+                .overlay(alignment: .topTrailing) {            // gear: show / hide the customization options
+                    Button {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { showAccountOptions.toggle() }
+                    } label: {
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(showAccountOptions ? Color.black : Theme.accent)
+                            .frame(width: 34, height: 34)
+                            .background(showAccountOptions ? Theme.accent : Theme.accent.opacity(0.16), in: Circle())
+                    }
+                    .buttonStyle(.plain).padding(12)
+                }
                 .overlay(RoundedRectangle(cornerRadius: 18).stroke(Theme.stroke, lineWidth: 1))
                 .clipShape(RoundedRectangle(cornerRadius: 18))
-
-                // User customization visibility
-                Card {
-                    Toggle(isOn: $showAccountOptions) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "paintbrush.pointed.fill").foregroundStyle(Theme.accent)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Show username customization").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.text)
-                                Text("Username style and account options").font(.system(size: 11)).foregroundStyle(Theme.subtle)
-                            }
-                        }
-                    }
-                    .tint(Theme.accent)
-                }
 
                 if showAccountOptions {
                 // Style (registered users)
@@ -489,8 +495,19 @@ struct AccountScreen: View {
         .buttonStyle(.plain)
     }
 
+    private var closeButton: some View {
+        Button { dismiss() } label: {
+            Image(systemName: "xmark").font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.text)
+                .frame(width: 34, height: 34).background(Color.white.opacity(0.10), in: Circle())
+        }
+        .buttonStyle(.plain).accessibilityLabel("Close")
+    }
+
+    /// Saved UDID, else one detected from the active certificate (named after the UDID / single-device profile).
+    /// A detected value is persisted so it survives restarts and shows everywhere.
     private func refreshAccountUDID() {
-        accountUDID = CertificateStore.knownUDID() ?? ""
+        CertificateStore.shared.adoptUDIDFromActiveCertificate()
+        accountUDID = CertificateStore.knownUDID(certName: CertificateStore.shared.active?.name) ?? ""
     }
 
     private func flash(_ m: String) {

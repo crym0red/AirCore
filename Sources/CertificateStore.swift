@@ -149,7 +149,18 @@ final class CertificateStore: ObservableObject {
         profileInfoCache[id] = Self.profileInfo(provision)
         save()
         if makeActive || activeID == nil { activeID = id }
+        adoptUDIDFromActiveCertificate()
         return cert
+    }
+
+    /// Persist the device UDID when it can be read from what was imported: a cert named after the UDID
+    /// (registration-service certs), or a profile that lists exactly one device. Never overwrites a saved UDID.
+    func adoptUDIDFromActiveCertificate() {
+        if let saved = UserDefaults.standard.string(forKey: "uzd_device_udid"), !saved.isEmpty { return }
+        guard let cert = active ?? certificates.last else { return }
+        if let u = Self.knownUDID(certName: cert.name) { Self.setKnownUDID(u); return }
+        let info = cachedProfileInfo(for: cert)
+        if info.udids.count == 1, let only = info.udids.first { Self.setKnownUDID(only) }
     }
 
     func delete(_ cert: Certificate) {
