@@ -414,6 +414,152 @@ nonisolated enum MachOTools {
         return thin.u64le(off)
     }
 
+    // MARK: Objective-C runtime metadata (class-dump mechanics)
+    //
+    // LC_SYMTAB's "-[Class sel]"-shaped strings only exist when a binary keeps
+    // local/debug symbols — most release App Store IPAs strip those. But the
+    // Objective-C runtime still needs the real class/method list at launch
+    // regardless of symbol stripping, so that metadata survives in the
+    // binary's own __objc_classlist/__objc_const/__objc_methname sections.
+    // This walks that metadata directly — the same mechanism `class-dump` and
+    // `nm -m` use — so it works on stripped release binaries where the
+    // LC_SYMTAB approach above finds nothing.
+    //
+    // Struct layouts below are transcribed from objc4's objc-runtime-new.h
+    // (64-bit/arm64, non-tagged, non-arm64e-signed pointers — AirShare's own
+    // IPAs are plain arm64, not arm64e, so no pointer-authentication stripping
+    // is needed here):
+    //   class_t:    isa@0 (8), superclass@8 (8), cache_t@16 (16), bits@32 (8)
+    //   class_ro_t: flags@0(4) instanceStart@4(4) instanceSize@8(4) reserved@12(4)
+    //               ivarLayout@16(8) name@24(8) baseMethods@32(8) baseProtocols@40(8)
+    //               ivars@48(8) weakIvarLayout@56(8) baseProperties@64(8)
+    //   method_list_t: entsizeAndFlags@0(4) count@4(4), then `count` entries of
+    //               `entsize` bytes each — either the classic "big" method_t
+    //               (SEL name(8); char *types(8); IMP imp(8)) or, when bit
+    //               0x80000000 of entsizeAndFlags is set, the newer "small"
+    //               self-relative method_t Xcode 14+ emits by default: three
+    //               int32 self-relative offsets, where `name` is additionally
+    //               *indirect* (it points at a pointer-sized slot in
+    //               __objc_selrefs, not straight at the string).
+    //
+    // Every read here is bounds-checked against the real segment data; a
+    // class/method that doesn't decode cleanly is skipped, never guessed at.
+
+    struct ObjCMethodInfo {
+        let selector: String
+        let isClassMethod: Bool
+        let impAddress: UInt64
+        /// Raw Objective-C type-encoding string (e.g. "v24@0:8@16q24"), straight
+        /// from __objc_methtype/__objc_methname — real when present, nil when
+        /// this method's list didn't carry one (never fabricated).
+        let typeEncoding: String?
+    }
+
+    struct ObjCClassInfo {
+        let name: String
+        /// VA of the class_t itself — not currently used for display, kept for
+        /// dedup/debugging.
+        let address: UInt64
+        let methods: [ObjCMethodInfo]
+    }
+
+    /// One method_list_t's entries, decoded as either the classic absolute-
+    /// pointer layout or the newer self-relative one, picked by the list's own
+    /// `entsizeAndFlags` flag bit — never assumed from the OS/toolchain version.
+    private static func objcMethodListEntries(in thin: Data, segments: [Segment], at listVA: UInt64) -> [(selector: String, impAddress: UInt64, typeEncoding: String?)] {
+        guard listVA != 0, let headerOff = fileOffset(forVA: listVA, segments: segments),
+              headerOff >= 0, headerOff + 8 <= thin.count else { return [] }
+        let entsizeAndFlags = thin.u32le(headerOff)
+        let count = Int(thin.u32le(headerOff + 4))
+        guard count > 0, count < 20_000 else { return [] }
+        let isSmall = (entsizeAndFlags & 0x8000_0000) != 0
+        let entsize = Int(entsizeAndFlags & 0x7FFF_FFFF)
+        guard entsize >= 8, entsize <= 64 else { return [] }   // sane bound: real values are 12 (small) or 24 (big)
+
+        var out: [(String, UInt64, String?)] = []
+        var entryVA = listVA + 8   // header is 8 bytes (entsizeAndFlags + count); entries follow immediately
+        for _ in 0..<count {
+            guard let entryOff = fileOffset(forVA: entryVA, segments: segments),
+                  entryOff >= 0, entryOff + entsize <= thin.count else { break }
+            if isSmall {
+                guard entryOff + 12 <= thin.count else { break }
+                // Self-relative: each field's stored int32 is an offset from
+                // that field's OWN address, not the struct's start.
+                let nameFieldVA = entryVA
+                let nameRel  = Int32(bitPattern: thin.u32le(entryOff))
+                let typesRel = Int32(bitPattern: thin.u32le(entryOff + 4))
+                let impRel   = Int32(bitPattern: thin.u32le(entryOff + 8))
+                // `name` is *indirect*: it points at a pointer-sized slot (in
+                // __objc_selrefs) that itself holds the real SEL/string VA.
+                let selRefVA = UInt64(bitPattern: Int64(nameFieldVA) + Int64(nameRel))
+                if let selPtr = pointer(in: thin, segments: segments, at: selRefVA),
+                   let selector = cString(in: thin, segments: segments, at: selPtr) {
+                    let typesVA = UInt64(bitPattern: Int64(nameFieldVA) + 4 + Int64(typesRel))
+                    let impVA   = UInt64(bitPattern: Int64(nameFieldVA) + 8 + Int64(impRel))
+                    let types = cString(in: thin, segments: segments, at: typesVA)
+                    out.append((selector, impVA, types))
+                }
+            } else {
+                guard entryOff + 24 <= thin.count else { break }
+                let namePtr  = thin.u64le(entryOff)
+                let typesPtr = thin.u64le(entryOff + 8)
+                let impPtr   = thin.u64le(entryOff + 16)
+                if let selector = cString(in: thin, segments: segments, at: namePtr) {
+                    let types = cString(in: thin, segments: segments, at: typesPtr)
+                    out.append((selector, impPtr, types))
+                }
+            }
+            entryVA += UInt64(entsize)
+            if out.count > 20_000 { break }
+        }
+        return out
+    }
+
+    /// A class_t's real name + its own method_list_t VA (class_ro_t.baseMethods).
+    /// Works unmodified for a metaclass pointer too — a metaclass is just
+    /// another class_t whose class_ro_t.baseMethods holds the `+` methods.
+    private static func objcClassNameAndMethodListVA(in thin: Data, segments: [Segment], classVA: UInt64) -> (name: String?, methodListVA: UInt64) {
+        guard let dataBits = pointer(in: thin, segments: segments, at: classVA + 32) else { return (nil, 0) }
+        let roVA = dataBits & ~UInt64(0x7)   // class_data_bits_t low 3 bits are runtime flags, not part of the pointer
+        guard roVA != 0,
+              let nameVA = pointer(in: thin, segments: segments, at: roVA + 24),
+              let baseMethodsVA = pointer(in: thin, segments: segments, at: roVA + 32) else { return (nil, 0) }
+        return (cString(in: thin, segments: segments, at: nameVA), baseMethodsVA)
+    }
+
+    /// Every real Objective-C class compiled into this binary, with its real
+    /// instance (`-`) and class (`+`) methods — read straight from
+    /// __objc_classlist/class_ro_t/method_list_t, not inferred or guessed.
+    /// Class methods are resolved via class_t.isa (the metaclass), exactly
+    /// how the Objective-C runtime itself resolves a `+` method.
+    static func objcClasses(in thin: Data, segments: [Segment], sections: [Section]) -> [ObjCClassInfo] {
+        guard is64(thin), let classlistSec = sections.first(where: { $0.name == "__objc_classlist" }) else { return [] }
+        let count = Int(classlistSec.size / 8)
+        guard count > 0, count < 50_000 else { return [] }
+
+        var out: [ObjCClassInfo] = []
+        for i in 0..<count {
+            let entryVA = classlistSec.addr + UInt64(i * 8)
+            guard let classVA = pointer(in: thin, segments: segments, at: entryVA), classVA != 0 else { continue }
+
+            let (instName, instListVA) = objcClassNameAndMethodListVA(in: thin, segments: segments, classVA: classVA)
+            guard let className = instName, !className.isEmpty else { continue }
+
+            var methods = objcMethodListEntries(in: thin, segments: segments, at: instListVA)
+                .map { ObjCMethodInfo(selector: $0.selector, isClassMethod: false, impAddress: $0.impAddress, typeEncoding: $0.typeEncoding) }
+
+            if let metaclassVA = pointer(in: thin, segments: segments, at: classVA), metaclassVA != 0 {
+                let (_, classListVA) = objcClassNameAndMethodListVA(in: thin, segments: segments, classVA: metaclassVA)
+                methods += objcMethodListEntries(in: thin, segments: segments, at: classListVA)
+                    .map { ObjCMethodInfo(selector: $0.selector, isClassMethod: true, impAddress: $0.impAddress, typeEncoding: $0.typeEncoding) }
+            }
+
+            out.append(ObjCClassInfo(name: className, address: classVA, methods: methods))
+            if out.count > 20_000 { break }
+        }
+        return out
+    }
+
     /// Extract the __TEXT,__text code section data + its VM address.
     static func textSection(_ sections: [Section], in thin: Data) -> (data: Data, vmaddr: UInt64)? {
         guard let s = sections.first(where: { $0.segment == "__TEXT" && $0.name == "__text" }) else { return nil }

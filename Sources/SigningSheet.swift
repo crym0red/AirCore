@@ -1397,6 +1397,7 @@ struct DeveloperToolSheet: View {
     @State private var cfgRefClasses: [String] = []
     @State private var symbolTable: [UInt64: String] = [:]
     @State private var importMap: [UInt64: String] = [:]
+    @State private var objcClassList: [MachOTools.ObjCClassInfo] = []
     @State private var showObjCBrowser = false
     @State private var objcBrowserQuery = ""
     @State private var selectedTweakMethods: Set<UInt64> = []
@@ -1555,7 +1556,12 @@ struct DeveloperToolSheet: View {
             .presentationDetents([.height(300)])
             .preferredColorScheme(.dark)
         }
-        .sheet(isPresented: $showCFGViewer) {
+        // These four were `.sheet(...)`, which on iOS is a non-fullscreen card:
+        // the presenting screen's own nav bar ("Search / Edit Strings", etc.)
+        // stayed visible peeking above it, and the sheet's own trailing edge
+        // clipped its nav-bar buttons. `.fullScreenCover` covers the whole
+        // screen, so there's exactly one nav bar and nothing gets cut off.
+        .fullScreenCover(isPresented: $showCFGViewer) {
             if let cfgFunction {
                 CFGViewerController(function: cfgFunction)
                     .ignoresSafeArea()
@@ -1563,7 +1569,7 @@ struct DeveloperToolSheet: View {
                 Color.black
             }
         }
-        .sheet(isPresented: $showPseudocodeViewer) {
+        .fullScreenCover(isPresented: $showPseudocodeViewer) {
             if let cfgFunction {
                 PseudocodeViewerController(function: cfgFunction)
                     .ignoresSafeArea()
@@ -1571,12 +1577,12 @@ struct DeveloperToolSheet: View {
                 Color.black
             }
         }
-        .sheet(isPresented: $showAnalysisCenter) {
+        .fullScreenCover(isPresented: $showAnalysisCenter) {
             if let cfgFunction {
                 AnalysisCenterController(function: cfgFunction).ignoresSafeArea()
             } else { Color.black }
         }
-        .sheet(isPresented: $showDisassemblerBrowser) {
+        .fullScreenCover(isPresented: $showDisassemblerBrowser) {
             if let cfgFunction {
                 DisassemblerBrowserController(function: cfgFunction)
                     .ignoresSafeArea()
@@ -1842,6 +1848,7 @@ struct DeveloperToolSheet: View {
         let symbols = MachOTools.symbolMap(in: ctx.thin)
         symbolTable = symbols   // cached for class-name resolution (see `references(for:...)`) — not just function names
         importMap = MachOTools.importStubMap(in: ctx.thin)   // real stub/symbol-pointer → imported-API-name map (see `calleesOf`)
+        objcClassList = MachOTools.objcClasses(in: ctx.thin, segments: ctx.segments, sections: ctx.sections)   // real __objc_classlist walk — works even when LC_SYMTAB is stripped
         functionIndex = starts.map { addr in
             (address: addr, name: Self.displayName(forSymbol: symbols[addr], fallback: String(format: "sub_%llx", addr)))
         }
@@ -2669,9 +2676,26 @@ struct DeveloperToolSheet: View {
     // pipeline as the Functions list or String Search: CFG, references,
     // and the Call Graph all key off the same real address.
 
-    private var objcMethods: [(address: UInt64, cls: String, category: String?, isClassMethod: Bool, selector: String)] {
-        guard !symbolTable.isEmpty else { return [] }
-        var out: [(UInt64, String, String?, Bool, String)] = []
+    /// Primary source: real __objc_classlist → class_t → class_ro_t →
+    /// method_list_t metadata (see `MachOTools.objcClasses`). This is what
+    /// actually has data on a typical stripped release binary — the
+    /// Objective-C runtime needs this metadata at launch regardless of
+    /// LC_SYMTAB stripping. Supplemented (never overridden) by any
+    /// "-[Class sel]"/"+[Class sel]" LC_SYMTAB strings the metadata pass
+    /// didn't already cover, for the rarer binary that still has those.
+    private var objcMethods: [(address: UInt64, cls: String, category: String?, isClassMethod: Bool, selector: String, typeEncoding: String?)] {
+        var seen = Set<String>()
+        var out: [(UInt64, String, String?, Bool, String, String?)] = []
+
+        for cls in objcClassList {
+            for m in cls.methods {
+                let key = "\(m.isClassMethod)|\(cls.name)|\(m.selector)"
+                guard seen.insert(key).inserted else { continue }
+                out.append((m.impAddress, cls.name, nil, m.isClassMethod, m.selector, m.typeEncoding))
+            }
+        }
+
+        guard !symbolTable.isEmpty else { return out }
         for (addr, name) in symbolTable {
             guard name.hasPrefix("-[") || name.hasPrefix("+[") , name.hasSuffix("]") else { continue }
             let isClassMethod = name.hasPrefix("+")
@@ -2689,20 +2713,22 @@ struct DeveloperToolSheet: View {
             // "Verified" = LC_FUNCTION_STARTS independently confirms a real
             // function begins at this exact address, not just metadata.
             guard let b = functionBounds(containing: addr), b.start == addr else { continue }
-            out.append((addr, cls, category, isClassMethod, selector))
+            let key = "\(isClassMethod)|\(cls)|\(selector)"
+            guard seen.insert(key).inserted else { continue }
+            out.append((addr, cls, category, isClassMethod, selector, nil))
         }
         return out
     }
 
-    private var objcClassGroups: [(cls: String, methods: [(address: UInt64, category: String?, isClassMethod: Bool, selector: String)])] {
+    private var objcClassGroups: [(cls: String, methods: [(address: UInt64, category: String?, isClassMethod: Bool, selector: String, typeEncoding: String?)])] {
         let q = objcBrowserQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        var grouped: [String: [(address: UInt64, category: String?, isClassMethod: Bool, selector: String)]] = [:]
+        var grouped: [String: [(address: UInt64, category: String?, isClassMethod: Bool, selector: String, typeEncoding: String?)]] = [:]
         for m in objcMethods {
             if !q.isEmpty {
                 let display = "\(m.isClassMethod ? "+" : "-")[\(m.cls) \(m.selector)]".lowercased()
                 guard m.cls.lowercased().contains(q) || m.selector.lowercased().contains(q) || display.contains(q) else { continue }
             }
-            grouped[m.cls, default: []].append((m.address, m.category, m.isClassMethod, m.selector))
+            grouped[m.cls, default: []].append((m.address, m.category, m.isClassMethod, m.selector, m.typeEncoding))
         }
         return grouped.map { (cls: $0.key, methods: $0.value.sorted { $0.selector < $1.selector }) }.sorted { $0.cls < $1.cls }
     }
@@ -2722,14 +2748,14 @@ struct DeveloperToolSheet: View {
                 if functionIndexState == .idle || functionIndexState == .loading {
                     VStack(spacing: 10) {
                         ProgressView().tint(blue)
-                        Text("Reading LC_FUNCTION_STARTS + LC_SYMTAB…").font(.caption).foregroundStyle(Theme.subtle)
+                        Text("Reading __objc_classlist + LC_FUNCTION_STARTS + LC_SYMTAB…").font(.caption).foregroundStyle(Theme.subtle)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if objcMethods.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "curlybraces").font(.largeTitle).foregroundStyle(Theme.subtle)
-                        Text("No verified Objective-C methods found.").font(.subheadline).foregroundStyle(Theme.text)
-                        Text("Either this binary's method symbols are stripped, or it's pure Swift/C with no -[Class selector:]-style LC_SYMTAB entries.")
+                        Text("No Objective-C methods found.").font(.subheadline).foregroundStyle(Theme.text)
+                        Text("Checked both this binary's __objc_classlist runtime metadata and its LC_SYMTAB -[Class selector:] entries — neither turned up anything, so this is most likely pure Swift/C with no Objective-C classes at all.")
                             .font(.caption).foregroundStyle(Theme.subtle).multilineTextAlignment(.center).padding(.horizontal, 30)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2793,9 +2819,9 @@ struct DeveloperToolSheet: View {
                                 }
                             }
                         } header: {
-                            Text("\(objcMethods.count) verified methods across \(objcClassGroups.count) classes")
+                            Text("\(objcMethods.count) methods across \(objcClassGroups.count) classes")
                         } footer: {
-                            Text("Each method is a real -[Class selector:]/+[Class selector:] LC_SYMTAB symbol confirmed as a real function entry by LC_FUNCTION_STARTS — not inferred from __objc_classlist/class_ro_t layout. Tap the circle to select for the swizzle dylib generator; tap the row itself to open its CFG.")
+                            Text("Each method comes from this binary's real __objc_classlist/class_ro_t/method_list_t runtime metadata — the same data the Objective-C runtime itself reads at launch, so this works even when LC_SYMTAB is stripped — supplemented by any -[Class selector:]/+[Class selector:] LC_SYMTAB symbols the metadata pass didn't already cover. Tap the circle to select for the swizzle dylib generator; tap the row itself to open its CFG.")
                         }.listRowBackground(Color(white: 0.08))
                     }
                     .scrollContentBackground(.hidden).background(Color.black)
@@ -2813,12 +2839,18 @@ struct DeveloperToolSheet: View {
     //
     // One .h per class, listing its real, verified methods — reusing the
     // exact same `objcClassGroups` the browser above already built from
-    // LC_SYMTAB + LC_FUNCTION_STARTS. Class names, method existence, and
-    // instance-vs-class kind are all real. Argument/return types are NOT
-    // — selectors carry no type encoding — so every one is an explicit
-    // `id` placeholder, same honesty rule as the swizzle generator.
+    // __objc_classlist runtime metadata (supplemented by LC_SYMTAB where
+    // present). Class names, method existence, and instance-vs-class kind
+    // are all real. Declared argument/return types in the signature itself
+    // are still `id` placeholders — decoding a full Objective-C type-encoding
+    // string into real C types isn't done here — but when the binary's
+    // method_list_t carried a real type-encoding string (common even on
+    // stripped release builds, since the runtime needs it for message
+    // dispatch), the raw encoding is included verbatim as a trailing
+    // comment, so you can read the real argument/return shape by eye
+    // without this generator having to guess at it.
 
-    private func classHeaderSource(for cls: String, methods: [(address: UInt64, category: String?, isClassMethod: Bool, selector: String)]) -> String {
+    private func classHeaderSource(for cls: String, methods: [(address: UInt64, category: String?, isClassMethod: Bool, selector: String, typeEncoding: String?)]) -> String {
         var decl = "@interface \(cls) : NSObject\n\n"
         for m in methods.sorted(by: { $0.selector < $1.selector }) {
             let argCount = m.selector.filter { $0 == ":" }.count
@@ -2830,7 +2862,10 @@ struct DeveloperToolSheet: View {
                 sig = parts.enumerated().map { i, part in "\(part):(id)arg\(i)" }.joined(separator: " ")
             }
             decl += "\(m.isClassMethod ? "+" : "-") (id)\(sig);"
-            if let cat = m.category { decl += "  // category: \(cat)" }
+            var comments: [String] = []
+            if let cat = m.category { comments.append("category: \(cat)") }
+            if let enc = m.typeEncoding, !enc.isEmpty { comments.append("encoding: \(enc)") }
+            if !comments.isEmpty { decl += "  // \(comments.joined(separator: "  "))" }
             decl += "\n"
         }
         decl += "\n@end\n"
@@ -2841,18 +2876,24 @@ struct DeveloperToolSheet: View {
         guard !objcClassGroups.isEmpty else { return }
         var files: [(String, Data)] = []
         var combined = """
-        // Auto-generated interface stubs — \(objcMethods.count) real, verified
-        // Objective-C method symbols (each confirmed against LC_FUNCTION_STARTS)
-        // across \(objcClassGroups.count) classes, from the CFG Viewer's Classes
-        // & Methods browser.
+        // Auto-generated interface stubs — \(objcMethods.count) real
+        // Objective-C methods across \(objcClassGroups.count) classes, from
+        // the CFG Viewer's Classes & Methods browser.
         //
-        // REAL: class names (from _OBJC_CLASS_$_ / method LC_SYMTAB symbols),
-        // which methods exist on each class, and instance-vs-class kind.
-        // NOT REAL — explicit placeholders: every argument/return type is
-        // `id`. Selector names carry no type information; this generator
-        // never parsed a method's real type-encoding, so treat this as a
-        // method-existence stub, not a compile-ready header, until you fill
-        // in real types from a class-dump or the real framework headers.
+        // REAL: class names, which methods exist on each class, and
+        // instance-vs-class kind — read directly from this binary's own
+        // __objc_classlist/class_ro_t/method_list_t runtime metadata (the
+        // same mechanism class-dump uses), which is why this still works on
+        // a release build with LC_SYMTAB symbols stripped. Supplemented,
+        // never overridden, by any "-[Class sel]"-style LC_SYMTAB entries
+        // the metadata pass didn't already cover.
+        // Where the binary's method_list_t carried a real type-encoding
+        // string, it's included as a trailing `// encoding: ...` comment —
+        // real, not guessed. The DECLARED signature below still uses `id`
+        // for every argument/return type: decoding a type-encoding string
+        // into real C types isn't done here, so treat this as a
+        // method-existence stub, not a compile-ready header, until you
+        // translate the encoding comments (or a class-dump) into real types.
         // Ivars are not included either — they weren't parsed in this pass.
 
         #import <Foundation/Foundation.h>

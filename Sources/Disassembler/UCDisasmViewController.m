@@ -288,21 +288,51 @@
             } else {
                 result = [disasm disassembleAtAddress:startAddr
                                                  size:codeSz];
+                // analyzeFunctionAtAddress: found no clean function boundary here —
+                // a common case for a jump target that's a stub/thunk/imported-symbol
+                // trampoline rather than a real LC_FUNCTION_STARTS entry. Rather than
+                // leaving the viewer blank, still build a real CFG over whatever we
+                // *could* decode: every instruction below is still a real, decoded
+                // instruction, only the "this is exactly one whole function" boundary
+                // claim is relaxed to "this is the decoded window from here".
+                if (result && result.instructions.count > 0) {
+                    NSArray<UCBasicBlock *> *blocks = [disasm buildCFG:result.instructions];
+                    if (blocks.count > 0) {
+                        UCFunction *synthesized = [[UCFunction alloc] init];
+                        synthesized.startAddress = startAddr;
+                        UCDisasmInstruction *lastInsn = result.instructions.lastObject;
+                        synthesized.endAddress = lastInsn ? (lastInsn.address + lastInsn.size) : startAddr;
+                        synthesized.size = (NSUInteger)(synthesized.endAddress - synthesized.startAddress);
+                        synthesized.boundaryIsBounded = YES;
+                        synthesized.name = self.navTitle ?: [NSString stringWithFormat:@"sub_%llx", startAddr];
+                        synthesized.instructions = result.instructions;
+                        synthesized.basicBlocks = blocks;
+                        synthesized.basicBlockCount = blocks.count;
+                        function = synthesized;
+                        result.functions = @[function];
+                    }
+                }
             }
         }
-        
+
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;
-            
+
             strongSelf.disasmResult = result;
             strongSelf.currentFunction = function;
             [strongSelf.loadingIndicator stopAnimating];
-            
+
             if (function) {
                 strongSelf.navTitle = function.name;
                 strongSelf.title = function.name;
                 [strongSelf updateCFGView];
+            } else {
+                // Genuinely undecodable (unmapped/unreadable region, or Capstone
+                // produced nothing at all) — say so explicitly instead of leaving
+                // an unexplained blank graph behind the placeholder status text.
+                strongSelf.graphStatusLabel.text = [NSString stringWithFormat:
+                    @"Could not disassemble 0x%llx — not a decodable code region.", startAddr];
             }
         });
     });
