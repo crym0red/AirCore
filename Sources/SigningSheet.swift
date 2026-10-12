@@ -23,6 +23,7 @@ private final class SigningLogSink: @unchecked Sendable {
 }
 
 struct SigningSheet: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     let ipaURL: URL
     let meta: IPAMeta
     var onSigned: (SignedEntry) -> Void

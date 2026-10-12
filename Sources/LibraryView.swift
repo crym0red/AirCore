@@ -8,6 +8,7 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct LibraryView: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @ObservedObject private var ota = OTAInstaller.shared
     @State private var items: [LibraryItem] = []
     @State private var loading = true

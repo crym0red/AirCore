@@ -7,6 +7,7 @@ import SwiftUI
 import UIKit
 
 struct SignedView: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @ObservedObject private var signed = SignedStore.shared
     @ObservedObject private var ota = OTAInstaller.shared
     @State private var installing: String?

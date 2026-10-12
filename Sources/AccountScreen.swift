@@ -8,6 +8,7 @@
 import SwiftUI
 
 struct AccountScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @ObservedObject private var account = ZefvAccount.shared
     @ObservedObject private var staff = StaffGate.shared
     @Environment(\.dismiss) private var dismiss

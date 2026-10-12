@@ -14,6 +14,7 @@ final class AppNav: ObservableObject {
 }
 
 struct AccountChip: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @ObservedObject private var account = ZefvAccount.shared
     @ObservedObject private var staff = StaffGate.shared
     private var role: UserRole { staff.isStaff ? staff.role : account.role }
@@ -55,6 +56,7 @@ struct AccountChip: View {
 }
 
 struct AccountDropdown: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @ObservedObject private var account = ZefvAccount.shared
     @ObservedObject private var staff = StaffGate.shared
     @ObservedObject private var signed = SignedStore.shared

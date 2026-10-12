@@ -456,6 +456,7 @@ final class SourceStore: ObservableObject {
 // MARK: - Sources list (Browse tab)
 
 struct SourcesView: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @ObservedObject private var store = SourceStore.shared
     @State private var editing = false
     @State private var adding = false
@@ -637,6 +638,7 @@ struct SourcesView: View {
 // MARK: - Source detail (the app list)
 
 private struct SourceDetailScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     let source: RepoSource
     @ObservedObject private var store = SourceStore.shared
     @ObservedObject private var appStats = AppStatsStore.shared
@@ -1100,6 +1102,7 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
 // MARK: - App detail sheet (AirShare layout)
 
 struct AppDetailSheet: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     let source: RepoSource
     let group: AppGroup
     @ObservedObject private var appStats = AppStatsStore.shared

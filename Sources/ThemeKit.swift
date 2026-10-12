@@ -70,19 +70,27 @@ final class AppTheme: ObservableObject {
     @Published var particleTouch: ParticleTouchMode { didSet { d.set(particleTouch.rawValue, forKey: "as_p_touch") } }
 
     /// Auto-cycle: `.background` drifts only the particle/grid layer (smooth, no re-skin);
-    /// `.app` steps the real accent every 20 s (re-skins the app, so it is slow on purpose).
+    /// `.app` steps the real accent every 10 s and rotates the bottom tabs, without closing anything you have open.
     @Published var cycleMode: CycleMode { didSet { d.set(cycleMode.rawValue, forKey: "as_cycle"); restartCycle() } }
     private var cycleTask: Task<Void, Never>?
+
+    /// While true, accent changes do not bump `revision` (no view rebuild) — views that observe the
+    /// theme simply re-read the new color, so open sheets, screens and scroll positions are kept.
+    private var cycling = false
 
     private func restartCycle() {
         cycleTask?.cancel(); cycleTask = nil
         guard cycleMode == .app else { return }
         cycleTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
                 guard !Task.isCancelled, let self else { return }
                 let next = hueShifted(Color(hex: self.accentHex), by: 0.03)
-                if let h = next.hexString() { self.accentHex = h.replacingOccurrences(of: "#", with: "").uppercased() }
+                if let h = next.hexString() {
+                    self.cycling = true
+                    self.accentHex = h.replacingOccurrences(of: "#", with: "").uppercased()
+                    self.cycling = false
+                }
             }
         }
     }
@@ -96,7 +104,7 @@ final class AppTheme: ObservableObject {
         isDark     = Theme.isDark
         background = ThemeBackground(rawValue: d.string(forKey: Theme.keyBackground) ?? "") ?? .particles
     }
-    private func bump() { revision &+= 1 }
+    private func bump() { if !cycling { revision &+= 1 } }
     func startCycleIfNeeded() { if cycleMode == .app && cycleTask == nil { restartCycle() } }
 
     var accent: Color { Color(hex: accentHex) }

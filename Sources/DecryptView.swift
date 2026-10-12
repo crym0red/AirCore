@@ -288,6 +288,7 @@ private extension Int {
 // MARK: - View
 
 struct DecryptView: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @ObservedObject private var c = DecryptClient.shared
     @State private var query = ""
     @State private var showVersions = false

@@ -27,6 +27,7 @@ struct DirExporter: UIViewControllerRepresentable {
 /// The theme controls live in Settings › Appearance; the title bar intentionally has no palette button.
 /// `center` renders a centered subtitle (AirShare-style "57 Apps") behind the leading title.
 struct TabTitleBar<Trailing: View>: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     let title: String
     var center: String? = nil            // second-row caption, e.g. "3 Apps"
     @ViewBuilder var trailing: Trailing

@@ -33,6 +33,7 @@ private enum Screen: Identifiable, Hashable {
 }
 
 struct SettingsView: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @EnvironmentObject var config: Config
     @EnvironmentObject var session: Session
     @ObservedObject private var certs = CertificateStore.shared
@@ -546,6 +547,7 @@ private struct ExtrasScreen: View {
 // MARK: - Detail screen shell
 
 private struct DetailScreen<Content: View>: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     let title: String
     @ViewBuilder var content: Content
     @Environment(\.dismiss) private var dismiss
