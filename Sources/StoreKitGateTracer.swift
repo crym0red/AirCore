@@ -119,7 +119,6 @@ nonisolated enum StoreKitGateTracer {
         }
 
         let basicBlocks = buildBasicBlocks(instructions)
-        let blockStarts = Set(basicBlocks.map(\.start))
         let importStubs = MachOTools.importStubMap(in: ctx.thin)
         let directCalls: [StoreKitGateTrace.CallEdge] = instructions.compactMap { insn in
             guard insn.mnem.uppercased() == "BL", let target = insn.branchTgt else { return nil }
@@ -215,8 +214,13 @@ nonisolated enum StoreKitGateTracer {
             // B.cond consumes NZCV, so find the nearest flag-setting instruction.
             let begin = max(0, index - 12)
             if begin < index, let def = instructions[begin..<index].last(where: { ["CMP", "CMN", "TST", "SUBS", "ADDS", "ANDS", "CCMP", "CCMN"].contains($0.mnem.uppercased()) }) {
+                // Compute safely without UInt64 underflow or Int overflow.
+                let diff: UInt64 = branch.address >= def.va ? branch.address - def.va : 0
+                let rawCount = diff / 4
+                let count = rawCount > UInt64(Int.max) ? Int.max : Int(rawCount)
+                let interveningCount = max(0, count - 1)
                 return .init(branchAddress: branch.address, register: "NZCV", definitionAddress: def.va,
-                             definition: "\\(def.mnem) \\(def.ops)", interveningInstructions: (branch.address - def.va) / 4 - 1)
+                             definition: "\(def.mnem) \(def.ops)", interveningInstructions: interveningCount)
             }
             return nil
         }
