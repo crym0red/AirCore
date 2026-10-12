@@ -187,6 +187,9 @@
     self.cfgView.blockTapHandler = ^(UCBasicBlock *block) {
         [weakSelf handleBasicBlockTap:block];
     };
+    self.cfgView.blockLongPressHandler = ^(UCBasicBlock *block) {
+        [weakSelf handleBasicBlockLongPress:block];
+    };
     self.cfgView.instructionTapHandler = ^(UCDisasmInstruction *instruction) {
         [weakSelf handleInstructionTap:instruction];
     };
@@ -324,6 +327,14 @@
 
 - (void)loadDisassembly {
     [self setLoadingProgress:0.08 status:@"Disassembling…"];
+    // Block views get built and placed incrementally — before layoutGraph
+    // positions everything, their frames all still default to (0,0,w,h), so
+    // they stack directly on top of each other. With the graph canvas
+    // visible underneath the (small, non-opaque) loading overlay, that
+    // half-built stack showed through as a garbled mess of overlapping
+    // cards. Hide the whole canvas until it's actually ready, and only
+    // reveal it once it's positioned — see finishCFGLayout.
+    self.graphScrollView.hidden = YES;
 
     __weak typeof(self) weakSelf = self;
     uint64_t startAddr = self.startAddress;
@@ -394,6 +405,9 @@
                 // Genuinely undecodable (unmapped/unreadable region, or Capstone
                 // produced nothing at all) — say so explicitly instead of leaving
                 // an unexplained blank graph behind the placeholder status text.
+                // The canvas was hidden going into this load, so it has to be
+                // brought back for the status message to actually be visible.
+                strongSelf.graphScrollView.hidden = NO;
                 [strongSelf hideLoadingOverlay];
                 strongSelf.graphStatusLabel.text = [NSString stringWithFormat:
                     @"Could not disassemble 0x%llx — not a decodable code region.", startAddr];
@@ -466,6 +480,11 @@
 
     [self updateZoomLabel];
     [self.view setNeedsLayout];
+    // Reveal only now that every block view has its real, final position and
+    // the scroll view is already zoomed/offset to fit — so what appears is
+    // exactly the finished graph in one step, not the half-built stack from
+    // partway through loading.
+    self.graphScrollView.hidden = NO;
     [self hideLoadingOverlay];
 }
 
@@ -512,34 +531,157 @@
 
     UIView *blockView = self.cfgView.blockViewMap[@(block.blockId)];
     if (blockView) {
-        blockView.backgroundColor = [UIColor colorWithRed:1.0 green:0.95 blue:0.6 alpha:0.8];
+        blockView.backgroundColor = [UIColor colorWithRed:0.45 green:0.38 blue:0.08 alpha:1.0]; // selected: gold
         [touchedIds addObject:@(block.blockId)];
     }
 
     for (UCBasicBlock *pred in block.predecessors) {
         UIView *predView = self.cfgView.blockViewMap[@(pred.blockId)];
         if (predView) {
-            predView.backgroundColor = [UIColor colorWithRed:0.65 green:0.8 blue:1.0 alpha:0.8]; // predecessors: blue
+            predView.backgroundColor = [UIColor colorWithRed:0.10 green:0.22 blue:0.42 alpha:1.0]; // predecessors: blue
             [touchedIds addObject:@(pred.blockId)];
         }
     }
 
+    // Distinguish the two branch directions out of a conditional instead of
+    // tinting every successor the same green — matches the true/false edge
+    // colors in drawEdges so tapping a block tells you which way is which
+    // without having to trace the lines yourself.
     for (UCBasicBlock *succ in block.successors) {
         UIView *succView = self.cfgView.blockViewMap[@(succ.blockId)];
-        if (succView) {
-            succView.backgroundColor = [UIColor colorWithRed:0.7 green:0.95 blue:0.7 alpha:0.8]; // successors: green
-            [touchedIds addObject:@(succ.blockId)];
+        if (!succView) continue;
+        if (succ.type == UCBasicBlockTypeConditionalFalse) {
+            succView.backgroundColor = [UIColor colorWithRed:0.38 green:0.10 blue:0.10 alpha:1.0]; // false: red
+        } else {
+            succView.backgroundColor = [UIColor colorWithRed:0.10 green:0.32 blue:0.12 alpha:1.0]; // true/default: green
         }
+        [touchedIds addObject:@(succ.blockId)];
     }
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // Was reset to plain white — a leftover from when block cards had a
+    // white background. The cards are dark now, so resetting to white left
+    // every tapped block (and its neighbors) stuck bright white forever.
+    UIColor *restingColor = [UIColor colorWithWhite:0.09 alpha:1.0];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         for (NSNumber *blockId in touchedIds) {
             UIView *currentView = self.cfgView.blockViewMap[blockId];
             if (currentView) {
-                currentView.backgroundColor = [UIColor whiteColor];
+                [UIView animateWithDuration:0.3 animations:^{
+                    currentView.backgroundColor = restingColor;
+                }];
             }
         }
     });
+
+    [self centerOnBlock:block animated:YES];
+}
+
+/// Scrolls (and, if the graph is currently zoomed out past comfortable
+/// reading size, zooms back in) so the given block is centered in the
+/// visible viewport. Used both for a direct tap and for "jump to
+/// predecessor/successor" from the long-press menu, so jumping to a block
+/// that's off-screen actually brings it into view instead of just flashing
+/// a highlight nobody can see.
+- (void)centerOnBlock:(UCBasicBlock *)block animated:(BOOL)animated {
+    UIView *blockView = self.cfgView.blockViewMap[@(block.blockId)];
+    if (!blockView) return;
+
+    CGFloat targetZoom = self.graphScrollView.zoomScale;
+    if (targetZoom < 0.7) targetZoom = 0.9;
+    targetZoom = MIN(MAX(targetZoom, self.graphScrollView.minimumZoomScale), self.graphScrollView.maximumZoomScale);
+
+    void (^centerNow)(void) = ^{
+        // blockView's frame is already in cfgView's own coordinate space
+        // (cfgView is its direct superview), so this just needs scaling by
+        // the current zoom to land in the scroll view's content coordinates.
+        CGRect blockFrame = blockView.frame;
+        CGPoint center = CGPointMake(
+            CGRectGetMidX(blockFrame) * self.graphScrollView.zoomScale,
+            CGRectGetMidY(blockFrame) * self.graphScrollView.zoomScale
+        );
+        CGSize viewportSize = self.graphScrollView.bounds.size;
+        CGPoint offset = CGPointMake(center.x - viewportSize.width / 2, center.y - viewportSize.height / 2);
+
+        CGSize contentSize = self.graphScrollView.contentSize;
+        offset.x = MIN(MAX(offset.x, 0), MAX(0, contentSize.width - viewportSize.width));
+        offset.y = MIN(MAX(offset.y, 0), MAX(0, contentSize.height - viewportSize.height));
+
+        [self.graphScrollView setContentOffset:offset animated:animated];
+    };
+
+    if (fabs(targetZoom - self.graphScrollView.zoomScale) > 0.01) {
+        [UIView animateWithDuration:animated ? 0.25 : 0 animations:^{
+            self.graphScrollView.zoomScale = targetZoom;
+        } completion:^(BOOL finished) {
+            centerNow();
+        }];
+    } else {
+        centerNow();
+    }
+}
+
+/// Long-press menu for a block: jump straight to a specific predecessor or
+/// successor (by name/address, not just a highlight flash), open the same
+/// spot in the linear disassembly browser, or copy the address.
+- (void)handleBasicBlockLongPress:(UCBasicBlock *)block {
+    if (!block) return;
+
+    NSString *addrTitle = [NSString stringWithFormat:@"loc_%llx", block.startAddress];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:addrTitle
+                                                                     message:nil
+                                                              preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+
+    if (self.currentFunction) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"View in Linear Disassembly"
+                                                   style:UIAlertActionStyleDefault
+                                                 handler:^(UIAlertAction *a) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            UCDisassemblerBrowserViewController *vc = [[UCDisassemblerBrowserViewController alloc]
+                initWithFunction:strongSelf.currentFunction
+                            title:strongSelf.currentFunction.name
+                 highlightAddress:block.startAddress];
+            UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+            [strongSelf presentViewController:nav animated:YES completion:nil];
+        }]];
+    }
+
+    for (UCBasicBlock *pred in block.predecessors) {
+        NSString *label = [NSString stringWithFormat:@"Jump to predecessor loc_%llx", pred.startAddress];
+        [alert addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf handleBasicBlockTap:pred];
+        }]];
+    }
+
+    for (UCBasicBlock *succ in block.successors) {
+        NSString *branchLabel = @"successor";
+        if (succ.type == UCBasicBlockTypeConditionalTrue) branchLabel = @"true branch";
+        else if (succ.type == UCBasicBlockTypeConditionalFalse) branchLabel = @"false branch";
+        NSString *label = [NSString stringWithFormat:@"Jump to %@ loc_%llx", branchLabel, succ.startAddress];
+        [alert addAction:[UIAlertAction actionWithTitle:label style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf handleBasicBlockTap:succ];
+        }]];
+    }
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"Copy Block Address" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        UIPasteboard.generalPasteboard.string = [NSString stringWithFormat:@"0x%llx", block.startAddress];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        UIView *blockView = self.cfgView.blockViewMap[@(block.blockId)];
+        alert.popoverPresentationController.sourceView = self.view;
+        if (blockView) {
+            alert.popoverPresentationController.sourceRect = [self.view convertRect:blockView.bounds fromView:blockView];
+        }
+    }
+
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark - UIScrollViewDelegate
@@ -558,7 +700,9 @@
 }
 
 - (void)moreAction {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Options options to the option"
+    // Was another garbled placeholder string ("Options options to the
+    // option") that shipped straight to the alert title.
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"More Options"
                                                                     message:nil
                                                              preferredStyle:UIAlertControllerStyleActionSheet];
 
@@ -604,6 +748,7 @@
 @property (nonatomic, strong) NSMutableArray *edgeLayers;
 @property (nonatomic, strong, readwrite) NSMutableDictionary *blockViewMap;
 @property (nonatomic, strong) CAGradientLayer *bgGradient;
+@property (nonatomic, strong, readwrite) NSSet<NSNumber *> *loopBlockIds;
 
 @end
 
@@ -641,7 +786,8 @@
 
 - (void)setBasicBlocks:(NSArray<UCBasicBlock *> *)basicBlocks {
     _basicBlocks = basicBlocks;
-    
+    self.loopBlockIds = [self computeLoopBlockIds];
+
     for (UIView *v in self.blockViews) [v removeFromSuperview];
     for (CALayer *l in self.edgeLayers) [l removeFromSuperlayer];
     [self.blockViews removeAllObjects];
@@ -662,6 +808,7 @@
                      progress:(void (^)(float fraction))progress
                    completion:(void (^)(void))completion {
     _basicBlocks = basicBlocks;
+    self.loopBlockIds = [self computeLoopBlockIds];
 
     for (UIView *v in self.blockViews) [v removeFromSuperview];
     for (CALayer *l in self.edgeLayers) [l removeFromSuperlayer];
@@ -873,9 +1020,32 @@
     
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(blockTapped:)];
     [view addGestureRecognizer:tap];
+    UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(blockLongPressed:)];
+    [view addGestureRecognizer:longPress];
     view.userInteractionEnabled = YES;
     view.tag = block.blockId;
-    
+
+    // Persistent loop marker: a block that sits on a back edge (loop header
+    // or loop tail) gets a left-edge accent stripe that stays up all the
+    // time, not just during the momentary tap highlight — so loops are
+    // visible at a glance while scanning the whole graph.
+    if ([self.loopBlockIds containsObject:@(block.blockId)]) {
+        CALayer *loopStripe = [CALayer layer];
+        loopStripe.name = @"loopStripe";
+        loopStripe.backgroundColor = [UIColor colorWithRed:0.9 green:0.5 blue:0.1 alpha:1.0].CGColor;
+        loopStripe.frame = CGRectMake(0, 0, 3, view.bounds.size.height);
+        loopStripe.autoresizingMask = kCALayerHeightSizable;
+        [view.layer addSublayer:loopStripe];
+
+        UILabel *loopBadge = [[UILabel alloc] init];
+        loopBadge.text = @"↻"; // ↻
+        loopBadge.font = [UIFont boldSystemFontOfSize:10];
+        loopBadge.textColor = [UIColor colorWithRed:0.9 green:0.5 blue:0.1 alpha:1.0];
+        [loopBadge sizeToFit];
+        loopBadge.frame = CGRectMake(blockWidth - loopBadge.frame.size.width - 6, 2, loopBadge.frame.size.width, 14);
+        [headerBar addSubview:loopBadge];
+    }
+
     return view;
 }
 
@@ -911,7 +1081,7 @@
 - (void)blockTapped:(UITapGestureRecognizer *)gesture {
     UIView *blockView = gesture.view;
     NSInteger blockId = blockView.tag;
-    
+
     for (UCBasicBlock *block in self.basicBlocks) {
         if (block.blockId == blockId) {
             if (self.blockTapHandler) {
@@ -922,9 +1092,77 @@
     }
 }
 
+- (void)blockLongPressed:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateBegan) return;
+    UIView *blockView = gesture.view;
+    NSInteger blockId = blockView.tag;
+
+    for (UCBasicBlock *block in self.basicBlocks) {
+        if (block.blockId == blockId) {
+            if (self.blockLongPressHandler) {
+                self.blockLongPressHandler(block);
+            }
+            break;
+        }
+    }
+}
+
+/// Walks the CFG with the same iterative DFS `layoutGraph` uses (so it finds
+/// exactly the same back edges), but only to answer "which blocks sit on a
+/// loop" — no positioning. Run before block views are built so
+/// `createBlockView:` can add a persistent loop marker on the first pass
+/// instead of a second patch-up pass over every view.
+- (NSSet<NSNumber *> *)computeLoopBlockIds {
+    if (self.basicBlocks.count == 0) return [NSSet set];
+
+    UCBasicBlock *entryBlock = nil;
+    for (UCBasicBlock *block in self.basicBlocks) {
+        if (block.type == UCBasicBlockTypeEntry || block.predecessors.count == 0) {
+            entryBlock = block;
+            break;
+        }
+    }
+    if (!entryBlock) entryBlock = self.basicBlocks.firstObject;
+
+    NSMutableArray *stack = [NSMutableArray array];
+    NSMutableSet *visited = [NSMutableSet set];
+    NSMutableSet *onStack = [NSMutableSet set];
+    NSMutableSet<NSNumber *> *loopIds = [NSMutableSet set];
+
+    [stack addObject:entryBlock];
+    [onStack addObject:@(entryBlock.blockId)];
+
+    while (stack.count > 0) {
+        UCBasicBlock *current = stack.lastObject;
+        NSNumber *curId = @(current.blockId);
+
+        if ([visited containsObject:curId]) {
+            [stack removeLastObject];
+            [onStack removeObject:curId];
+            continue;
+        }
+        [visited addObject:curId];
+
+        for (UCBasicBlock *succ in current.successors) {
+            NSNumber *succId = @(succ.blockId);
+            if ([visited containsObject:succId] && [onStack containsObject:succId]) {
+                [loopIds addObject:curId];
+                [loopIds addObject:succId];
+                continue;
+            }
+            if (![visited containsObject:succId]) {
+                [stack addObject:succ];
+                [onStack addObject:succId];
+            }
+        }
+    }
+
+    return loopIds;
+}
+
 - (void)layoutGraph {
     if (self.basicBlocks.count == 0) return;
-    
+
     NSMutableDictionary<NSNumber *, NSNumber *> *levelMap = [NSMutableDictionary dictionary];
     NSMutableDictionary<NSNumber *, NSMutableArray<NSNumber *> *> *levelBlocks = [NSMutableDictionary dictionary];
     NSMutableSet<NSString *> *backEdges = [NSMutableSet set];
@@ -1283,16 +1521,25 @@
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UISearchController *searchController;
 @property (nonatomic, copy) NSArray<UCDisasmInstruction *> *visibleInstructions;
+@property (nonatomic, assign) uint64_t highlightAddress;
+@property (nonatomic, assign) BOOL hasScrolledToHighlight;
 @end
 
 @implementation UCDisassemblerBrowserViewController
 
 - (instancetype)initWithFunction:(UCFunction *)function title:(NSString *)title {
+    return [self initWithFunction:function title:title highlightAddress:0];
+}
+
+- (instancetype)initWithFunction:(UCFunction *)function
+                           title:(NSString *)title
+                highlightAddress:(uint64_t)highlightAddress {
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
         _function = function;
         _browserTitle = title.length ? [title copy] : (function.name ?: @"Disassembler");
         _visibleInstructions = function.instructions ?: @[];
+        _highlightAddress = highlightAddress;
     }
     return self;
 }
@@ -1332,6 +1579,20 @@
     ]];
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.highlightAddress == 0 || self.hasScrolledToHighlight) return;
+    self.hasScrolledToHighlight = YES;
+
+    NSUInteger row = [self.visibleInstructions indexOfObjectPassingTest:^BOOL(UCDisasmInstruction *insn, NSUInteger idx, BOOL *stop) {
+        return insn.address == self.highlightAddress;
+    }];
+    if (row == NSNotFound) return;
+
+    NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:0];
+    [self.tableView scrollToRowAtIndexPath:path atScrollPosition:UITableViewScrollPositionMiddle animated:YES];
+}
+
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
     NSString *q = [searchController.searchBar.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].lowercaseString;
     if (!q.length) {
@@ -1361,7 +1622,14 @@
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Instruction" forIndexPath:indexPath];
     UCDisasmInstruction *insn = self.visibleInstructions[indexPath.row];
-    cell.backgroundColor = [UIColor blackColor];
+    // Persistent sync highlight: when this list was opened from a tapped CFG
+    // block, the row for that block's start address stays tinted so it's
+    // obvious where the graph selection landed in the linear view, not just
+    // a one-time scroll with nothing to show for it once you start scrolling.
+    BOOL isSyncedRow = (self.highlightAddress != 0 && insn.address == self.highlightAddress);
+    cell.backgroundColor = isSyncedRow
+        ? [UIColor colorWithRed:0.30 green:0.22 blue:0.03 alpha:1.0]
+        : [UIColor blackColor];
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
 
     NSMutableAttributedString *text = [[NSMutableAttributedString alloc] init];

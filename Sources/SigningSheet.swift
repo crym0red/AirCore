@@ -1410,6 +1410,9 @@ struct DeveloperToolSheet: View {
     @State private var showCFGFind = false
     @State private var cfgFindQuery = ""
     @State private var showFunctionList = false
+    /// The CFG floating toolbar starts collapsed to a single button — none of
+    /// its actions (Functions included) are reachable until this is tapped.
+    @State private var cfgToolbarExpanded = false
     @State private var cfgPicked = false   // true once the user actually chose a function/address — guards the "nothing picked, close" check
     @State private var functionListQuery = ""
     @State private var functionIndex: [(address: UInt64, name: String)] = []
@@ -1564,11 +1567,16 @@ struct DeveloperToolSheet: View {
         .preferredColorScheme(.dark)
         .task {
             if mode == .cfgViewer {
-                // Don't auto-dump the whole __text section as one giant pseudo-function —
-                // that's the 800+ block wall the whole-window window produced. Instead
-                // open straight to the real function list and let the user pick one.
-                showFunctionList = true
+                // Load the real function table first, then go straight into the
+                // CFG for the first function — no "pick a function" screen in the
+                // way. Loading the index *before* calling openLocalCFG (instead of
+                // racing them, which is what used to send people to a 800+ block
+                // "__text CFG" wall) means functionBounds(containing:) has real
+                // data to work with immediately, so the very first CFG shown is
+                // already bounded to one real function, not the whole section.
                 await loadFunctionIndex()
+                cfgPicked = true
+                await openLocalCFG()
             } else {
                 await runScan()
             }
@@ -1636,7 +1644,7 @@ struct DeveloperToolSheet: View {
     private var cfgDirectView: some View {
         Group {
             if let cfgFunction {
-                ZStack(alignment: .bottom) {
+                ZStack(alignment: .bottomTrailing) {
                     CFGViewerController(function: cfgFunction).ignoresSafeArea()
                     cfgFloatingToolbar
                 }
@@ -1683,103 +1691,110 @@ struct DeveloperToolSheet: View {
     /// Two slim rows of icon-over-label buttons, each evenly filling its row's
     /// width — not a single crowded icon-only pill — so nothing overlaps or
     /// gets squeezed off the edge on a phone-width screen.
+    /// Collapsed to a single round button by default — none of its actions
+    /// (Functions included) are reachable until that button is tapped. Once
+    /// expanded, every action is a single column of pills stacked on top of
+    /// each other running up from the toggle, hugging the right edge.
     private var cfgFloatingToolbar: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 0) {
-                Menu {
-                    Button { showDisassemblerBrowser = true } label: {
-                        Label("Disassembler Browser", systemImage: "list.bullet.rectangle")
+        VStack(alignment: .trailing, spacing: 10) {
+            if cfgToolbarExpanded {
+                VStack(alignment: .trailing, spacing: 8) {
+                    Menu {
+                        Button { showDisassemblerBrowser = true } label: {
+                            Label("Disassembler Browser", systemImage: "list.bullet.rectangle")
+                        }
+                        Button { showPseudocodeViewer = true } label: {
+                            Label("Pseudocode", systemImage: "chevron.left.forwardslash.chevron.right")
+                        }
+                        Button { showAnalysisCenter = true } label: {
+                            Label("Analysis Center", systemImage: "square.grid.3x3")
+                        }
+                    } label: {
+                        cfgToolbarPill("square.grid.2x2", "More")
                     }
-                    Button { showPseudocodeViewer = true } label: {
-                        Label("Pseudocode", systemImage: "chevron.left.forwardslash.chevron.right")
+
+                    cfgToolbarRow("list.bullet.indent", "Functions") {
+                        showFunctionList = true
+                        if functionIndexState == .idle { Task { await loadFunctionIndex() } }
                     }
-                    Button { showAnalysisCenter = true } label: {
-                        Label("Analysis Center", systemImage: "square.grid.3x3")
+                    cfgToolbarRow("curlybraces", "Classes") {
+                        showObjCBrowser = true
+                        if functionIndexState == .idle { Task { await loadFunctionIndex() } }
                     }
-                } label: {
-                    cfgToolbarItem("square.grid.2x2", "More")
+                    cfgToolbarRow("info.circle", "Info") {
+                        showFunctionInfo = true
+                        if cfgCallersState == .idle, let f = cfgFunction { Task { await loadCallers(of: f.startAddress) } }
+                    }
+                    cfgToolbarRow("point.3.connected.trianglepath.dotted", "Call Graph") { openCallGraph() }
+                    cfgToolbarRow("magnifyingglass", "Find") { showCFGFind = true }
+                    cfgToolbarRow("text.magnifyingglass", "Strings") {
+                        showStringIndex = true
+                        if stringIndexState == .idle { Task { await buildStringIndex() } }
+                    }
+                    cfgToolbarRow("flag.badge.ellipsis", "Gates") {
+                        showGateFinder = true
+                        if gateFinderState == .idle { Task { await buildGateCandidates() } }
+                    }
+                    cfgToolbarRow("lock.shield", "Manifest") {
+                        showManifest = true
+                        if manifestState == .idle { Task { await loadManifest() } }
+                    }
+                    cfgToolbarRow("xmark.circle", "Close Viewer") { dismiss() }
                 }
-
-                Button {
-                    showFunctionList = true
-                    if functionIndexState == .idle { Task { await loadFunctionIndex() } }
-                } label: {
-                    cfgToolbarItem("list.bullet.indent", "Functions")
-                }
-
-                Button {
-                    showObjCBrowser = true
-                    if functionIndexState == .idle { Task { await loadFunctionIndex() } }
-                } label: {
-                    cfgToolbarItem("curlybraces", "Classes")
-                }
-
-                Button {
-                    showFunctionInfo = true
-                    if cfgCallersState == .idle, let f = cfgFunction { Task { await loadCallers(of: f.startAddress) } }
-                } label: {
-                    cfgToolbarItem("info.circle", "Info")
-                }
-
-                Button { openCallGraph() } label: {
-                    cfgToolbarItem("point.3.connected.trianglepath.dotted", "Call Graph")
-                }
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .opacity
+                ))
             }
 
-            HStack(spacing: 0) {
-                Button { showCFGFind = true } label: {
-                    cfgToolbarItem("magnifyingglass", "Find")
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
+                    cfgToolbarExpanded.toggle()
                 }
-
-                Button {
-                    showStringIndex = true
-                    if stringIndexState == .idle { Task { await buildStringIndex() } }
-                } label: {
-                    cfgToolbarItem("text.magnifyingglass", "Strings")
-                }
-
-                Button {
-                    showGateFinder = true
-                    if gateFinderState == .idle { Task { await buildGateCandidates() } }
-                } label: {
-                    cfgToolbarItem("flag.badge.ellipsis", "Gates")
-                }
-
-                Button {
-                    showManifest = true
-                    if manifestState == .idle { Task { await loadManifest() } }
-                } label: {
-                    cfgToolbarItem("lock.shield", "Manifest")
-                }
-
-                Button { dismiss() } label: {
-                    cfgToolbarItem("xmark", "Close")
-                }
+            } label: {
+                // Points left ("pull the menu out") when collapsed, right
+                // ("push it back out of the way") once expanded — a tab, not
+                // an icon-only button, so it reads as something that slides
+                // rather than something that just opens a menu over the graph.
+                Image(systemName: cfgToolbarExpanded ? "chevron.right" : "chevron.left")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 50, height: 50)
+                    .background(blue, in: Circle())
+                    .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.35), radius: 8, y: 3)
             }
         }
-        .padding(.horizontal, 10).padding(.vertical, 10)
-        .frame(maxWidth: 420)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
-        .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
-        .padding(.horizontal, 14)
+        .padding(.trailing, 14)
         .padding(.bottom, 18)
     }
 
-    /// One icon-over-label cell, evenly filling its row — the building block
-    /// for `cfgFloatingToolbar`'s two-row layout.
-    private func cfgToolbarItem(_ systemImage: String, _ label: String) -> some View {
-        VStack(spacing: 3) {
-            Image(systemName: systemImage)
-                .font(.system(size: 17, weight: .semibold))
-            Text(label)
-                .font(.system(size: 9, weight: .medium))
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
+    /// One row in the expanded toolbar column: tapping it runs the action and
+    /// collapses the menu back down, same as picking an item from any menu.
+    private func cfgToolbarRow(_ systemImage: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
+                cfgToolbarExpanded = false
+            }
+        } label: {
+            cfgToolbarPill(systemImage, label)
+        }
+    }
+
+    /// The pill shape shared by every row and the "More" menu's own label —
+    /// icon + text side by side, right-aligned so the column reads cleanly
+    /// against the right edge of the screen.
+    private func cfgToolbarPill(_ systemImage: String, _ label: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(.system(size: 13, weight: .semibold))
+            Image(systemName: systemImage).font(.system(size: 15, weight: .semibold)).frame(width: 20)
         }
         .foregroundStyle(.white)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.14), lineWidth: 1))
+        .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
     }
 
 
@@ -3294,17 +3309,43 @@ struct DeveloperToolSheet: View {
                     }.listRowBackground(Color(white: 0.08))
 
                     Section {
+                        let stats = functionComplexity(for: fn)
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                            complexityTile("Basic blocks", "\(stats.nodeCount)")
+                            complexityTile("Edges", "\(stats.edgeCount)")
+                            complexityTile("Complexity", "\(stats.cyclomaticComplexity)")
+                            complexityTile("Loops", "\(stats.loopCount)")
+                            complexityTile("Branch blocks", "\(stats.branchBlockCount)")
+                            complexityTile("Max out-degree", "\(stats.maxOutDegree)")
+                        }
+                        .padding(.vertical, 4)
+                        Label(
+                            stats.hasRecoveredName ? "Named — real symbol or recovered selector" : "Synthesized — no symbol found, named from its address",
+                            systemImage: stats.hasRecoveredName ? "checkmark.seal" : "questionmark.circle"
+                        )
+                        .font(.caption).foregroundStyle(stats.hasRecoveredName ? .green : Theme.subtle)
+                    } header: {
+                        Text("Complexity")
+                    } footer: {
+                        Text("Cyclomatic complexity (E − N + 2) estimates how many independent paths run through this function — higher usually means more branching logic worth a closer look. Loops counts real back edges found by walking the same block graph the CFG viewer renders.")
+                    }.listRowBackground(Color(white: 0.08))
+
+                    Section {
                         if cfgRefStrings.isEmpty {
                             Text("No real string references resolved in this function.").font(.caption).foregroundStyle(Theme.subtle)
                         } else {
                             ForEach(cfgRefStrings, id: \.self) { s in
-                                Text("\"\(s)\"").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                                xrefRow(text: "\"\(s)\"") {
+                                    stringIndexQuery = s
+                                    showFunctionInfo = false
+                                    showStringIndex = true
+                                }
                             }
                         }
                     } header: {
                         Text("References — strings it touches")
                     } footer: {
-                        Text("Resolved statically from the file's adrp+ldr/add pairs — not a live-process read, so this works on any IPA, not just AirShare's own code.")
+                        Text("Resolved statically from the file's adrp+ldr/add pairs — not a live-process read, so this works on any IPA, not just AirShare's own code. Tap one to find every other function that references it.")
                     }.listRowBackground(Color(white: 0.08))
 
                     Section {
@@ -3312,13 +3353,17 @@ struct DeveloperToolSheet: View {
                             Text("No Objective-C selectors referenced in this function.").font(.caption).foregroundStyle(Theme.subtle)
                         } else {
                             ForEach(cfgRefSelectors, id: \.self) { s in
-                                Text("@selector(\(s))").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                                xrefRow(text: "@selector(\(s))") {
+                                    stringIndexQuery = s
+                                    showFunctionInfo = false
+                                    showStringIndex = true
+                                }
                             }
                         }
                     } header: {
                         Text("Objective-C messages sent")
                     } footer: {
-                        Text("Every adrp+ldr pair whose slot lands in __objc_selrefs — the ABI guarantees that table only ever holds selector names, so this is real, not a guess at which bl is objc_msgSend.")
+                        Text("Every adrp+ldr pair whose slot lands in __objc_selrefs — the ABI guarantees that table only ever holds selector names, so this is real, not a guess at which bl is objc_msgSend. Tap one to find every other function sending it.")
                     }.listRowBackground(Color(white: 0.08))
 
                     Section {
@@ -3326,13 +3371,17 @@ struct DeveloperToolSheet: View {
                             Text("No Objective-C classes resolved in this function.").font(.caption).foregroundStyle(Theme.subtle)
                         } else {
                             ForEach(cfgRefClasses, id: \.self) { c in
-                                Text(c).font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                                xrefRow(text: c, weight: .semibold) {
+                                    objcBrowserQuery = c
+                                    showFunctionInfo = false
+                                    showObjCBrowser = true
+                                }
                             }
                         }
                     } header: {
                         Text("Objective-C classes")
                     } footer: {
-                        Text("From __objc_classrefs slots matched against this class's real _OBJC_CLASS_$_ symbol in LC_SYMTAB — only resolves classes actually defined in this binary, not ones it merely imports.")
+                        Text("From __objc_classrefs slots matched against this class's real _OBJC_CLASS_$_ symbol in LC_SYMTAB — only resolves classes actually defined in this binary, not ones it merely imports. Tap one to open it in the Classes & Methods browser.")
                     }.listRowBackground(Color(white: 0.08))
 
                     Section {
@@ -3413,6 +3462,102 @@ struct DeveloperToolSheet: View {
                 Image(systemName: "arrow.forward.circle").foregroundStyle(blue)
             }
         }
+    }
+
+    /// A tappable row for a string/selector/class reference in Function Info
+    /// that jumps to the real reverse-lookup for it — every other function
+    /// that touches the same string, sends the same selector, or references
+    /// the same class — instead of just listing it as inert text.
+    private func xrefRow(text: String, weight: Font.Weight = .regular, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(text).font(.system(size: 12, weight: weight, design: .monospaced)).foregroundStyle(Theme.text).lineLimit(1)
+                Spacer()
+                Image(systemName: "arrow.forward.circle").foregroundStyle(blue).font(.caption)
+            }
+        }
+    }
+
+    /// Real, computed-not-guessed stats about a function's control flow —
+    /// backs the "Complexity" section of Function Info. Everything here
+    /// comes straight off the already-built basic-block graph (the same
+    /// predecessor/successor data the CFG viewer renders), not a heuristic
+    /// about what the function "looks like it does".
+    private struct FunctionComplexity {
+        var nodeCount: Int
+        var edgeCount: Int
+        /// McCabe cyclomatic complexity for a single-entry CFG: E - N + 2.
+        var cyclomaticComplexity: Int
+        var loopCount: Int
+        var branchBlockCount: Int
+        var maxOutDegree: Int
+        var hasRecoveredName: Bool
+    }
+
+    private func functionComplexity(for fn: UCFunction) -> FunctionComplexity {
+        let blocks = fn.basicBlocks
+        let nodeCount = blocks.count
+        let edgeCount = blocks.reduce(0) { $0 + ($1.successors?.count ?? 0) }
+        let branchBlockCount = blocks.filter { ($0.successors?.count ?? 0) > 1 }.count
+        let maxOutDegree = blocks.map { $0.successors?.count ?? 0 }.max() ?? 0
+        // E - N + 2P, with P = 1 (one connected component: this function).
+        let cyclomatic = max(1, edgeCount - nodeCount + 2)
+
+        // Same iterative-DFS back-edge detection the native CFG canvas uses
+        // (UCCFGView.computeLoopBlockIds in UCDisasmViewController.m) — a
+        // block reached again while still on the DFS stack means the edge
+        // that reached it loops back, i.e. a real loop in this function.
+        var loopEdgeCount = 0
+        if let entry = blocks.first(where: { $0.type == .entry || ($0.predecessors?.count ?? 0) == 0 }) ?? blocks.first {
+            var stack: [UCBasicBlock] = [entry]
+            var visited = Set<Int>()
+            var onStack = Set<Int>()
+            onStack.insert(entry.blockId)
+            while let current = stack.last {
+                let curId = current.blockId
+                if visited.contains(curId) {
+                    stack.removeLast()
+                    onStack.remove(curId)
+                    continue
+                }
+                visited.insert(curId)
+                for succ in current.successors ?? [] {
+                    let succId = succ.blockId
+                    if visited.contains(succId) && onStack.contains(succId) {
+                        loopEdgeCount += 1
+                        continue
+                    }
+                    if !visited.contains(succId) {
+                        stack.append(succ)
+                        onStack.insert(succId)
+                    }
+                }
+            }
+        }
+
+        // "sub_<hex>" is this codebase's synthesized fallback name for a
+        // function nothing else could name — anything else means a real
+        // symbol or recovered Objective-C selector was found for it.
+        let hasRecoveredName = !fn.name.hasPrefix("sub_")
+
+        return FunctionComplexity(
+            nodeCount: nodeCount,
+            edgeCount: edgeCount,
+            cyclomaticComplexity: cyclomatic,
+            loopCount: loopEdgeCount,
+            branchBlockCount: branchBlockCount,
+            maxOutDegree: maxOutDegree,
+            hasRecoveredName: hasRecoveredName
+        )
+    }
+
+    /// One stat tile in the Complexity section.
+    private func complexityTile(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value).font(.system(size: 15, weight: .bold, design: .monospaced)).foregroundStyle(Theme.text)
+            Text(label).font(.caption2).foregroundStyle(Theme.subtle)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Interactive call graph — the view

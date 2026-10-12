@@ -33,8 +33,13 @@ typedef NS_ENUM(NSInteger, UCDisasmViewMode) {
 
 @property (nonatomic, strong, nullable) NSArray<UCBasicBlock *> *basicBlocks;
 @property (nonatomic, copy, nullable) void (^blockTapHandler)(UCBasicBlock *block);
+@property (nonatomic, copy, nullable) void (^blockLongPressHandler)(UCBasicBlock *block);
 @property (nonatomic, copy, nullable) void (^instructionTapHandler)(UCDisasmInstruction *instruction);
 @property (nonatomic, strong, readonly, nullable) NSMutableDictionary<NSNumber *, UIView *> *blockViewMap;
+/// Block ids that sit on at least one back edge (a loop header or loop
+/// tail), computed by `layoutGraph`. Blocks in this set get a persistent
+/// loop marker, not just a momentary tap highlight.
+@property (nonatomic, strong, readonly, nullable) NSSet<NSNumber *> *loopBlockIds;
 
 - (void)layoutGraph;
 
@@ -66,6 +71,14 @@ typedef NS_ENUM(NSInteger, UCDisasmViewMode) {
 
 - (instancetype)initWithFunction:(UCFunction *)function
                            title:(nullable NSString *)title;
+
+/// Same as above, but scrolls to and persistently highlights the row whose
+/// instruction address matches `highlightAddress` as soon as the list
+/// appears — used to land in the same spot a CFG block tap was synchronized
+/// from, instead of just opening at the top of the function.
+- (instancetype)initWithFunction:(UCFunction *)function
+                           title:(nullable NSString *)title
+                 highlightAddress:(uint64_t)highlightAddress;
 
 @end
 
