@@ -64,17 +64,7 @@ struct SignedView: View {
             AppActionSheet(
                 name: e.name, bundle: e.bundleID,
                 icon: e.iconURL.flatMap { try? Data(contentsOf: $0) },
-                actions: [
-                    .init(title: "Install App", icon: "square.and.arrow.down", role: .normal) {
-                        sheetEntry = nil; Task { await install(e) }
-                    },
-                    .init(title: "Re-Sign App", icon: "checkmark.seal", role: .normal) {
-                        sheetEntry = nil; SignQueue.shared.enqueue(e.ipaURL)
-                    },
-                    .init(title: "Delete", icon: "trash", role: .destructive) {
-                        sheetEntry = nil; signed.delete(e)
-                    },
-                ]
+                actions: actionSheetActions(for: e)
             )
             .presentationDetents([.height(340)])
             .then { view in
@@ -105,9 +95,42 @@ struct SignedView: View {
         return "Signed \(airshareRelative(e.signedAt))\(installs)"
     }
 
+    /// Built as a plain `var` + `append` rather than one big array-literal
+    /// expression — a chain of `+`/ternary/trailing-closure array literals is
+    /// exactly the shape that trips up Swift's type-checker ("unable to type-
+    /// check this expression in reasonable time").
+    private func actionSheetActions(for e: SignedEntry) -> [AppActionSheet.Action] {
+        var out: [AppActionSheet.Action] = []
+        out.append(.init(title: "Install App", icon: "square.and.arrow.down", role: .normal) {
+            sheetEntry = nil; Task { await install(e) }
+        })
+        // Only offered when TrollStore is actually detected on-device
+        // (apple-magnifier:// scheme — see OTAInstaller.trollStoreAvailable).
+        // Skips our own signing/provisioning limits entirely: TrollStore
+        // installs the raw IPA itself via its own persistence.
+        if OTAInstaller.trollStoreAvailable {
+            out.append(.init(title: "Install with TrollStore", icon: "bolt.fill", role: .normal) {
+                sheetEntry = nil; Task { await installTrollStore(e) }
+            })
+        }
+        out.append(.init(title: "Re-Sign App", icon: "checkmark.seal", role: .normal) {
+            sheetEntry = nil; SignQueue.shared.enqueue(e.ipaURL)
+        })
+        out.append(.init(title: "Delete", icon: "trash", role: .destructive) {
+            sheetEntry = nil; signed.delete(e)
+        })
+        return out
+    }
+
     private func install(_ e: SignedEntry) async {
         installing = e.id; error = nil
         do { try await OTAInstaller.shared.install(e) } catch { self.error = error.localizedDescription }
+        installing = nil
+    }
+
+    private func installTrollStore(_ e: SignedEntry) async {
+        installing = e.id; error = nil
+        do { try await OTAInstaller.shared.installWithTrollStore(e) } catch { self.error = error.localizedDescription }
         installing = nil
     }
 }

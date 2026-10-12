@@ -191,7 +191,8 @@ struct SigningSheet: View {
                         cert: certs.active?.name ?? "",
                         entitlements: lastEntitlements,
                         onInstall: { showInstallPrompt = false; Task { await install(r) } },
-                        onCancel: { showInstallPrompt = false }
+                        onCancel: { showInstallPrompt = false },
+                        onTrollStore: OTAInstaller.trollStoreAvailable ? { showInstallPrompt = false; Task { await installTrollStore(r) } } : nil
                     )
                 }
             }
@@ -1287,6 +1288,20 @@ struct SigningSheet: View {
         } catch {
             self.error = error.localizedDescription
             log.append("error: install failed — \(error.localizedDescription)")
+        }
+    }
+
+    private func installTrollStore(_ r: SignedEntry) async {
+        error = nil
+        do {
+            try await OTAInstaller.shared.installWithTrollStore(r)
+            log.append("✓ Handed off to TrollStore")
+            withAnimation { sentToHome = true }
+            try? await Task.sleep(nanoseconds: 2_600_000_000)
+            withAnimation { sentToHome = false }
+        } catch {
+            self.error = error.localizedDescription
+            log.append("error: TrollStore install failed — \(error.localizedDescription)")
         }
     }
 }
@@ -3573,7 +3588,12 @@ struct DeveloperToolSheet: View {
                     continue
                 }
                 visited.insert(curId)
-                for succ in current.successors ?? [] {
+                // `successors` is an ObjC `NSArray<UCBasicBlock *> *` bridged into
+                // Swift as `[Any]` here (not `[UCBasicBlock]`), so each element has
+                // to be cast before `.blockId` is reachable on it. The `for case
+                // let ... as` form skips anything that isn't a UCBasicBlock instead
+                // of force-casting and crashing on a stray entry.
+                for case let succ as UCBasicBlock in current.successors ?? [] {
                     let succId = succ.blockId
                     if visited.contains(succId) && onStack.contains(succId) {
                         loopEdgeCount += 1
@@ -5124,6 +5144,9 @@ struct InstallPromptOverlay: View {
     let entitlements: [String: String]
     var onInstall: () -> Void
     var onCancel: () -> Void
+    /// Only shown when non-nil — the caller passes this exactly when
+    /// OTAInstaller.trollStoreAvailable detected TrollStore on-device.
+    var onTrollStore: (() -> Void)? = nil
 
     @State private var showSandboxing = false
     @State private var showCapabilities = false
@@ -5179,6 +5202,17 @@ struct InstallPromptOverlay: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxHeight: 460)
+                if let onTrollStore {
+                    Divider().overlay(Color.white.opacity(0.10))
+                    Button(action: onTrollStore) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "bolt.fill").font(.system(size: 13, weight: .bold))
+                            Text("Install with TrollStore").font(.system(size: 14, weight: .semibold))
+                        }
+                        .foregroundStyle(Color(red: 1.0, green: 0.72, blue: 0.0))
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                    }
+                }
                 Divider().overlay(Color.white.opacity(0.10))
                 HStack(spacing: 0) {
                     Button(action: onCancel) { Text("Cancel").font(.system(size: 16)).foregroundStyle(blue).frame(maxWidth: .infinity, minHeight: 52) }

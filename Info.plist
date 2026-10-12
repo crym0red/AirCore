@@ -73,5 +73,13 @@
 			</array>
 		</dict>
 	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<!-- TrollStore's own inter-app install URL scheme (apple-magnifier://install?url=...).
+		     Declared here so -canOpenURL: can actually detect whether TrollStore is
+		     installed — without this entry iOS silently reports false for every app
+		     not already linked, which is why that check has to be declared up front. -->
+		<string>apple-magnifier</string>
+	</array>
 </dict>
 </plist>

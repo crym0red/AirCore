@@ -797,6 +797,22 @@ nonisolated final class LocalOTAServer: Identifiable, @unchecked Sendable {
         return c.url!
     }
 
+    /// An HTTPS page (not the itms-services:// URL itself) that immediately
+    /// redirects to it. Handing THIS to `UIApplication.open` — instead of the
+    /// itms-services URL directly — is what actually gets the native "Install"
+    /// prompt to appear consistently: starting around iOS 17.4, a handful of
+    /// devices stopped showing the prompt at all when a third-party app opened
+    /// the itms-services scheme straight from its own foreground context (no
+    /// error, it just silently did nothing). Routing the handoff through an
+    /// https:// URL first — the same way a tapped Safari link does it — opens
+    /// Safari, which then redirects into itms-services itself; that reliably
+    /// triggers the prompt across the iOS versions this has been seen to fail
+    /// on. `itmsServicesURL` above is kept as the direct fallback link on the
+    /// page itself, for the rare case the auto-redirect doesn't fire.
+    var installPageURL: URL {
+        URL(string: "https://\(Self.host()):\(LocalZSignAPI.shared.port)/ota/\(id.uuidString)/install.html")!
+    }
+
     func response(for resource: String, request: Request) throws -> Response {
         let manifest: [String: Any] = [
             "items": [[
@@ -820,6 +836,28 @@ nonisolated final class LocalOTAServer: Identifiable, @unchecked Sendable {
         case "ping":
             OTATrace.shared.add("/ota/\(id.uuidString)/ping", status: 200, bytes: 4)
             return Response(status: .ok, version: request.version, headers: ["Content-Type": "text/plain"], body: .init(string: "pong"))
+        case "install.html":
+            // See `installPageURL` above: handed to UIApplication.open instead of
+            // the itms-services URL directly, this is what actually gets Safari
+            // to kick off the real install prompt on devices where opening
+            // itms-services straight from the app silently did nothing.
+            let itms = itmsServicesURL.absoluteString
+            let html = """
+            <!doctype html><html><head><meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta http-equiv="refresh" content="0;url=\(itms)">
+            <title>Installing…</title>
+            <style>body{background:#000;color:#fff;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center;padding:24px;box-sizing:border-box}
+            a{color:#3b82f6}</style></head>
+            <body><div>
+            <p>Starting the install…</p>
+            <p>If nothing happens, <a href="\(itms)">tap here</a>.</p>
+            </div>
+            <script>window.location.href = "\(itms)";</script>
+            </body></html>
+            """
+            OTATrace.shared.add("/ota/\(id.uuidString)/install.html", status: 200, bytes: Int64(html.utf8.count))
+            return Response(status: .ok, version: request.version, headers: ["Content-Type": "text/html; charset=utf-8"], body: .init(string: html))
         case "manifest.plist":
             OTATrace.shared.add("/ota/\(id.uuidString)/manifest.plist", status: 200, bytes: Int64(manifestData.count))
             return Response(status: .ok, version: request.version, headers: ["Content-Type": "text/xml"], body: .init(data: manifestData))
