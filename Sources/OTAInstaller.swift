@@ -1,8 +1,11 @@
 //
 //  OTAInstaller.swift
 //  Serves a locally-signed IPA over the on-device Vapor HTTPS server and hands
-//  iOS the itms-services URL. Keeps the server alive under a background task
-//  for the ~90s installd needs.
+//  iOS the itms-services URL — via an in-app Safari view controller
+//  (`pendingInstallURL` / `SafariInstallView`, presented at the RootView level)
+//  rather than `UIApplication.open`, so AirShare itself never backgrounds for
+//  the redirect+prompt. Keeps the server alive under a background task for the
+//  ~90s installd needs once the user actually taps Install in the system sheet.
 //
 //  Cert source follows ServerConfig.certMode:
 //    "public" → the ACME (airshare.lol-style) cert, refreshed from the certs repo.
@@ -15,6 +18,8 @@
 
 import Foundation
 import UIKit
+import SwiftUI
+import SafariServices
 import ZIPFoundation
 
 @MainActor
@@ -35,6 +40,18 @@ final class OTAInstaller: ObservableObject {
     }
     @Published var lastReport: Report?
     @Published var tracing = false
+
+    /// The install-redirect page, presented in an IN-APP `SFSafariViewController`
+    /// (RootView owns the actual `.sheet`) rather than handed to `UIApplication.open`.
+    /// `UIApplication.open` on an https:// URL does a full app-switch to Safari.app —
+    /// AirShare gets backgrounded, and the Vapor server serving the manifest/IPA now
+    /// has to survive on a background-task grant iOS can reclaim at any time instead
+    /// of staying fully alive in the foreground. `SFSafariViewController` runs as a
+    /// child view controller IN this app's own process: no app-switch, no
+    /// `applicationDidEnterBackground`, server stays foregrounded the whole time —
+    /// while still being a real Safari-engine navigation, which is what actually
+    /// gets the native install prompt to fire reliably (see `installPageURL`).
+    @Published var pendingInstallURL: URL?
 
     enum InstallError: LocalizedError {
         case ipaMissing, openFailed
@@ -129,15 +146,23 @@ final class OTAInstaller: ObservableObject {
         }
 
         lastReport = nil; tracing = true
-        // Hand Safari an https:// page that redirects into itms-services, rather
-        // than opening the itms-services URL directly — see `installPageURL`'s
-        // doc comment. Several people reported no Apple install popup at all on
-        // some iOS versions with the direct-open approach; routing through an
-        // actual Safari navigation is what those same install flows rely on to
-        // show it reliably.
-        let opened = await UIApplication.shared.open(server.installPageURL)
-        guard opened else { tearDown(); tracing = false; throw InstallError.openFailed }
+        // Present the https:// redirect page in an IN-APP Safari view controller
+        // (RootView's `.sheet`, driven by `pendingInstallURL`) instead of handing
+        // it to UIApplication.open — see `pendingInstallURL`'s doc comment just
+        // above. AirShare (and this Vapor server) never actually backgrounds;
+        // it's still a real Safari-engine navigation, so the itms-services
+        // redirect still fires the native install prompt reliably.
+        let installURL = server.installPageURL
+        pendingInstallURL = installURL
         ZefvVPS.report(bundle: bundleID, version: version, name: name, stage: "prompted")
+        // The in-app Safari sheet has done its job once the redirect has had time
+        // to hand off to itms-services — the system's own install dialog, once it
+        // appears, is a separate OS-level overlay that stays up on its own after
+        // this. Drop the sheet so the person lands back on AirShare's own screen.
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if self?.pendingInstallURL == installURL { self?.pendingInstallURL = nil }
+        }
 
         let ipaSize = (try? FileManager.default.attributesOfItem(atPath: ipaURL.path)[.size] as? Int64) ?? 0
         let activeCertName = CertificateStore.shared.active?.name
@@ -267,4 +292,30 @@ final class OTAInstaller: ObservableObject {
             if let data, let img = UIImage(data: data) { img.draw(in: CGRect(origin: .zero, size: size)) }
         }.pngData() ?? Data()
     }
+}
+
+// MARK: - In-app Safari (keeps AirShare foregrounded through the install handoff)
+
+/// Hosted by RootView's `.sheet(isPresented:)`, driven by `OTAInstaller.pendingInstallURL`.
+/// An `SFSafariViewController` runs as a child view controller inside THIS app's own
+/// process — unlike `UIApplication.shared.open(_:)` on an https:// URL, which does a
+/// real app-switch to Safari.app and backgrounds AirShare. Using this instead means
+/// the on-device Vapor server serving the manifest/IPA never has to survive on a
+/// background-task grant for the redirect+prompt part of the flow; it's still running
+/// fully in the foreground the whole time, while the page itself still gets real
+/// Safari-engine navigation behavior (what makes the itms-services redirect reliably
+/// trigger the native install prompt in the first place).
+struct SafariInstallView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let config = SFSafariViewController.Configuration()
+        config.barCollapsingEnabled = true
+        let vc = SFSafariViewController(url: url, configuration: config)
+        vc.dismissButtonStyle = .close
+        vc.preferredControlTintColor = UIColor(Theme.accent)
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
 }

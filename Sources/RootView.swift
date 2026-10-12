@@ -18,6 +18,7 @@ struct RootView: View {
     @ObservedObject private var nav = AppNav.shared
     @ObservedObject private var onboarding = Onboarding.shared
     @ObservedObject private var signed = SignedStore.shared
+    @ObservedObject private var otaInstaller = OTAInstaller.shared
     @State private var tab = 0
     @State private var signItem: SignItem?
     @State private var signError: String?
@@ -126,6 +127,21 @@ struct RootView: View {
         } message: { Text(signError ?? "") }
         .fullScreenCover(isPresented: $onboarding.needsOnboarding) {
             OnboardingView { onboarding.complete() }
+        }
+        // In-app Safari for the OTA install handoff — see OTAInstaller.pendingInstallURL
+        // and SafariInstallView's doc comments. Lives at the root so it works no
+        // matter which screen (SigningSheet, SignedView, a deep-link install, …)
+        // triggered the install; AirShare itself never backgrounds for this.
+        // `.fullScreenCover`, same as every other UIKit-chrome screen in this app
+        // (SigningSheet, GitHubHubScreen) — SFSafariViewController brings its own
+        // nav bar/toolbar, so a half-height `.sheet` card would just clip it.
+        .fullScreenCover(isPresented: Binding(
+            get: { otaInstaller.pendingInstallURL != nil },
+            set: { if !$0 { otaInstaller.pendingInstallURL = nil } }
+        )) {
+            if let url = otaInstaller.pendingInstallURL {
+                SafariInstallView(url: url).ignoresSafeArea()
+            }
         }
     }
 
