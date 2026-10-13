@@ -152,7 +152,7 @@ struct ProtectionAnalysisSheet: View {
     @State private var showManualPatchWorkbench = false
     @State private var showTestOnlyTrustConfiguration = false
 
-    private var categories: [String] { ["All"] + Array(Set(findings.map(\.category))).sorted() }
+    private var categories: [String] { ["All"] + Array(Set(findings.map(\.|category))).sorted() }
     private var filtered: [ProtectionFinding] {
         findings.filter { finding in
             let matchesCategory = selectedCategory == "All" || finding.category == selectedCategory
@@ -164,7 +164,7 @@ struct ProtectionAnalysisSheet: View {
 
     private var headerControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Address-backed static-analysis leads. Imported calls are matched to real ARM64 BL targets; strings include section addresses and file offsets. These findings do not prove runtime behavior and no patches are applied.")
+            Text("Address-backed static-analysis leads. Imported calls are matched to real ARM64 BL targets; strings include section addresses and file offsets. These findings do not prove runtim[...]")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Picker("Category", selection: $selectedCategory) {
@@ -242,7 +242,7 @@ struct ProtectionAnalysisSheet: View {
                     ContentUnavailableView(
                         "No matching indicators",
                         systemImage: "checkmark.shield",
-                        description: Text("No matching imported calls or strings match the current filters. Indirect calls, stripped metadata, and embedded frameworks may require separate analysis.")
+                        description: Text("No matching imported calls or strings match the current filters. Indirect calls, stripped metadata, and embedded frameworks may require separate analysi[...]")
                     )
                 } else {
                     List {
@@ -264,8 +264,8 @@ struct ProtectionAnalysisSheet: View {
             .navigationTitle("Protection Analysis")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: ToolbarItemPlacement.navigationBarTrailing) {
-                    Button("Close") { dismiss() }
+                SwiftUI.ToolbarItem(placement: SwiftUI.ToolbarItemPlacement.navigationBarTrailing) {
+                    SwiftUI.Button("Close") { dismiss() }
                 }
             }
             .sheet(item: $impactFinding) { finding in
