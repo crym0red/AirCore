@@ -284,12 +284,19 @@ struct ProtectionAnalysisSheet: View {
                         }
                         if filtered.isEmpty {
                             Section {
-                                ContentUnavailableView(
-                                    "No matching indicators",
-                                    systemImage: "checkmark.shield",
-                                    description: Text("No imported calls or strings match the current filters. Indirect calls, stripped metadata, and embedded frameworks may require separate analysis.")
-                                )
+                                VStack(spacing: 8) {
+                                    Image(systemName: "checkmark.shield")
+                                        .font(.system(size: 40))
+                                        .foregroundStyle(.secondary)
+                                    Text("No matching indicators")
+                                        .font(.headline)
+                                    Text("No imported calls or strings match the current filters. Indirect calls, stripped metadata, and embedded frameworks may require separate analysis.")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                        .multilineTextAlignment(.center)
+                                }
                                 .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
                             }
                         } else {
                             ForEach(grouped, id: \.category) { group in
