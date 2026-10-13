@@ -152,7 +152,7 @@ struct ProtectionAnalysisSheet: View {
     @State private var showManualPatchWorkbench = false
     @State private var showTestOnlyTrustConfiguration = false
 
-    private var categories: [String] { ["All"] + Array(Set(findings.map(\.|category))).sorted() }
+    private var categories: [String] { ["All"] + Array(Set(findings.map(\.category))).sorted() }
     private var filtered: [ProtectionFinding] {
         findings.filter { finding in
             let matchesCategory = selectedCategory == "All" || finding.category == selectedCategory
@@ -263,11 +263,11 @@ struct ProtectionAnalysisSheet: View {
             .background(Color.black)
             .navigationTitle("Protection Analysis")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                SwiftUI.ToolbarItem(placement: SwiftUI.ToolbarItemPlacement.navigationBarTrailing) {
+            .toolbar(content: {
+                SwiftUI.ToolbarItem(placement: .navigationBarTrailing) {
                     SwiftUI.Button("Close") { dismiss() }
                 }
-            }
+            })
             .sheet(item: $impactFinding) { finding in
                 PatchImpactPreviewSheet(finding: finding, ipaURL: ipaURL)
             }
