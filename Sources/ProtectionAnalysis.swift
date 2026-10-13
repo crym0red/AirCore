@@ -264,7 +264,7 @@ struct ProtectionAnalysisSheet: View {
             .navigationTitle("Protection Analysis")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
+                ToolbarItem(placement: ToolbarItemPlacement.navigationBarTrailing) {
                     Button("Close") { dismiss() }
                 }
             }
