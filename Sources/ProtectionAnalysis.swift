@@ -66,7 +66,7 @@ nonisolated enum ProtectionAnalysis {
                 output.append(ProtectionFinding(
                     id: key, category: profile.category, title: profile.title,
                     confidence: "Resolved imported call",
-                    location: String(format: "call 0x%llx Â· %@ 0x%llx", call.callVA, call.functionName, call.functionVA),
+                    location: String(format: "call 0x%llx \u{00B7} %@ 0x%llx", call.callVA, call.functionName, call.functionVA),
                     evidence: ["API: \(call.api)",
                                String(format: "Call-site VA: 0x%llx", call.callVA),
                                String(format: "Containing function: %@ (0x%llx)", call.functionName, call.functionVA)],
@@ -84,7 +84,7 @@ nonisolated enum ProtectionAnalysis {
                 output.append(ProtectionFinding(
                     id: key, category: profile.category, title: profile.title,
                     confidence: "Address-backed string indicator",
-                    location: String(format: "%@ VA 0x%llx Â· file offset 0x%x", hit.section, hit.va, hit.fileOffset),
+                    location: String(format: "%@ VA 0x%llx \u{00B7} file offset 0x%x", hit.section, hit.va, hit.fileOffset),
                     evidence: [hit.value, "Section: \(hit.section)",
                                String(format: "String VA: 0x%llx", hit.va),
                                String(format: "Thin-slice file offset: 0x%x", hit.fileOffset)],
@@ -271,7 +271,7 @@ struct ProtectionAnalysisSheet: View {
                 if isLoading {
                     VStack(spacing: 12) {
                         ProgressView()
-                        Text("Analyzing Mach-O evidenceâ¦")
+                        Text("Analyzing Mach-O evidence\u{2026}")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -309,11 +309,11 @@ struct ProtectionAnalysisSheet: View {
             .background(Color.black)
             .navigationTitle("Protection Analysis")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar(content: {
+            .toolbar {
                 SwiftUI.ToolbarItem(placement: .navigationBarTrailing) {
                     SwiftUI.Button("Close") { dismiss() }
                 }
-            })
+            }
             .sheet(item: $impactFinding) { finding in
                 PatchImpactPreviewSheet(finding: finding, ipaURL: ipaURL)
             }
