@@ -309,11 +309,7 @@ struct ProtectionAnalysisSheet: View {
             .background(Color.black)
             .navigationTitle("Protection Analysis")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                SwiftUI.ToolbarItem(placement: .navigationBarTrailing) {
-                    SwiftUI.Button("Close") { dismiss() }
-                }
-            }
+            .navigationBarItems(trailing: SwiftUI.Button("Close") { dismiss() })
             .sheet(item: $impactFinding) { finding in
                 PatchImpactPreviewSheet(finding: finding, ipaURL: ipaURL)
             }
