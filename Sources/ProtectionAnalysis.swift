@@ -11,6 +11,8 @@ nonisolated struct ProtectionFinding: Identifiable, Sendable {
     let location: String
     let evidence: [String]
     let note: String
+    /// Numeric address used for stable ordering (VA of the call site or string).
+    var sortAddress: UInt64 = 0
 }
 
 nonisolated enum ProtectionAnalysis {
@@ -31,6 +33,7 @@ nonisolated enum ProtectionAnalysis {
     }
 
     private static let profiles: [Profile] = ProtectionProfiles.all
+    private static let perProfileCap = 80
 
     static func scan(ipaURL: URL) async -> [ProtectionFinding] {
         guard let ctx = await LocalBinaryScanner.binaryContext(ipaURL: ipaURL, localPath: nil) else { return [] }
@@ -40,77 +43,100 @@ nonisolated enum ProtectionAnalysis {
         let strings = collectStrings(thin: thin, sections: ctx.sections)
         let calls = collectImportedCalls(thin: thin, sections: ctx.sections, imports: imports,
                                          starts: MachOTools.functionStarts(in: thin), symbols: symbols)
+
+        // Lowercase once, not once per profile.
+        let loweredCalls = calls.map { $0.api.lowercased() }
+        let loweredStrings = strings.map { $0.value.lowercased() }
+
         var output: [ProtectionFinding] = []
         var seen = Set<String>()
 
         for profile in profiles {
-            let matchingCalls = calls.filter { call in
-                let name = call.api.lowercased()
-                return profile.importTerms.contains { name.contains($0.lowercased()) }
-            }
-            for call in matchingCalls.prefix(80) {
+            if Task.isCancelled { return [] }
+            let importTerms = profile.importTerms.map { $0.lowercased() }
+            let stringTerms = profile.stringTerms.map { $0.lowercased() }
+
+            var callCount = 0
+            for (idx, call) in calls.enumerated() where callCount < perProfileCap {
+                let name = loweredCalls[idx]
+                guard importTerms.contains(where: { name.contains($0) }) else { continue }
                 let key = "\(profile.category)|call|\(call.callVA)|\(call.api)"
                 guard seen.insert(key).inserted else { continue }
+                callCount += 1
                 output.append(ProtectionFinding(
                     id: key, category: profile.category, title: profile.title,
                     confidence: "Resolved imported call",
-                    location: String(format: "call 0x%llx · %@ 0x%llx", call.callVA, call.functionName, call.functionVA),
-                    evidence: ["API: \(call.api)", String(format: "Call-site VA: 0x%llx", call.callVA),
-                              String(format: "Containing function: %@ (0x%llx)", call.functionName, call.functionVA)],
-                    note: profile.note))
+                    location: String(format: "call 0x%llx Â· %@ 0x%llx", call.callVA, call.functionName, call.functionVA),
+                    evidence: ["API: \(call.api)",
+                               String(format: "Call-site VA: 0x%llx", call.callVA),
+                               String(format: "Containing function: %@ (0x%llx)", call.functionName, call.functionVA)],
+                    note: profile.note,
+                    sortAddress: call.callVA))
             }
 
-            let matchingStrings = strings.filter { hit in
-                let value = hit.value.lowercased()
-                return profile.stringTerms.contains { value.contains($0.lowercased()) }
-            }
-            for hit in matchingStrings.prefix(80) {
+            var strCount = 0
+            for (idx, hit) in strings.enumerated() where strCount < perProfileCap {
+                let value = loweredStrings[idx]
+                guard stringTerms.contains(where: { value.contains($0) }) else { continue }
                 let key = "\(profile.category)|str|\(hit.fileOffset)|\(hit.value)"
                 guard seen.insert(key).inserted else { continue }
+                strCount += 1
                 output.append(ProtectionFinding(
                     id: key, category: profile.category, title: profile.title,
                     confidence: "Address-backed string indicator",
-                    location: String(format: "%@ VA 0x%llx · file offset 0x%x", hit.section, hit.va, hit.fileOffset),
-                    evidence: [hit.value, "Section: \(hit.section)", String(format: "String VA: 0x%llx", hit.va),
-                              String(format: "Thin-slice file offset: 0x%x", hit.fileOffset)],
-                    note: profile.note))
+                    location: String(format: "%@ VA 0x%llx Â· file offset 0x%x", hit.section, hit.va, hit.fileOffset),
+                    evidence: [hit.value, "Section: \(hit.section)",
+                               String(format: "String VA: 0x%llx", hit.va),
+                               String(format: "Thin-slice file offset: 0x%x", hit.fileOffset)],
+                    note: profile.note,
+                    sortAddress: hit.va))
             }
         }
+
         return output.sorted {
             if $0.category != $1.category { return $0.category < $1.category }
-            return $0.location < $1.location
+            if $0.sortAddress != $1.sortAddress { return $0.sortAddress < $1.sortAddress }
+            return $0.id < $1.id
         }
     }
 
     private static func collectStrings(thin: Data, sections: [MachOTools.Section]) -> [StringHit] {
         let wanted: Set<String> = ["__cstring", "__objc_methname", "__objc_classname", "__objc_methtype"]
         var hits: [StringHit] = []
+        let base = thin.startIndex
         for section in sections where wanted.contains(section.name) {
             guard section.offset <= UInt64(thin.count) else { continue }
             let start = Int(section.offset)
             guard section.size > 0, section.size <= UInt64(thin.count - start) else { continue }
-            let size = Int(section.size)
-            guard size > 0, start < thin.count else { continue }
-            let end = start + size
+            let end = start + Int(section.size)
             var cursor = start
             while cursor < end {
                 let stringStart = cursor
-                while cursor < end, thin[thin.startIndex + cursor] != 0 { cursor += 1 }
+                while cursor < end, thin[base + cursor] != 0 { cursor += 1 }
                 let length = cursor - stringStart
                 if length >= 4, length <= 4096,
-                   let value = String(data: thin.subdata(in: stringStart..<cursor), encoding: .utf8) {
-                    let containsControl = value.unicodeScalars.contains {
-                        CharacterSet.controlCharacters.contains($0)
-                    }
-                    if !containsControl {
+                   let value = String(data: thin.subdata(in: (base + stringStart)..<(base + cursor)), encoding: .utf8) {
+                    let hasControl = value.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F }
+                    if !hasControl {
                         hits.append(StringHit(value: value, section: section.name,
-                                              va: section.addr + UInt64(stringStart - start), fileOffset: stringStart))
+                                              va: section.addr + UInt64(stringStart - start),
+                                              fileOffset: stringStart))
                     }
                 }
                 cursor += 1
             }
         }
         return hits
+    }
+
+    /// Last function start <= address (binary search over sorted starts).
+    private static func containingFunction(_ sortedStarts: [UInt64], _ address: UInt64) -> UInt64? {
+        var lo = 0, hi = sortedStarts.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if sortedStarts[mid] <= address { lo = mid + 1 } else { hi = mid }
+        }
+        return lo == 0 ? nil : sortedStarts[lo - 1]
     }
 
     /// Finds actual ARM64 BL instructions whose computed target equals a real
@@ -127,11 +153,12 @@ nonisolated enum ProtectionAnalysis {
             for i in 0..<count {
                 let word = raw.loadUnaligned(fromByteOffset: i * 4, as: UInt32.self)
                 guard (word & 0xFC00_0000) == 0x9400_0000 else { continue } // BL imm26
-                let imm = Int64(AVXDisassembler.signExtend(UInt64(word & 0x03FF_FFFF), 26)) * 4
+                // Sign-extend imm26: shift bit 25 up to the sign bit, arithmetic shift back.
+                let imm = Int64(Int32(bitPattern: word << 6) >> 6) * 4
                 let site = text.vmaddr + UInt64(i * 4)
-                let targetSigned = Int64(bitPattern: site) + imm
+                let targetSigned = Int64(bitPattern: site) &+ imm
                 guard targetSigned >= 0, let api = imports[UInt64(targetSigned)] else { continue }
-                let fn = orderedStarts.last(where: { $0 <= site })
+                let fn = containingFunction(orderedStarts, site)
                 let name = fn.flatMap { symbols[$0] }.map { $0.hasPrefix("_") ? String($0.dropFirst()) : $0 }
                     ?? fn.map { String(format: "sub_%llx", $0) } ?? "unknown function"
                 result.append(CallHit(api: api, callVA: site, functionName: name, functionVA: fn ?? site))
@@ -153,18 +180,26 @@ struct ProtectionAnalysisSheet: View {
     @State private var showTestOnlyTrustConfiguration = false
 
     private var categories: [String] { ["All"] + Array(Set(findings.map(\.category))).sorted() }
+
     private var filtered: [ProtectionFinding] {
         findings.filter { finding in
             let matchesCategory = selectedCategory == "All" || finding.category == selectedCategory
+            guard matchesCategory else { return false }
+            if query.isEmpty { return true }
             let combinedText = finding.title + " " + finding.location + " " + finding.evidence.joined(separator: " ")
-            let matchesQuery = query.isEmpty || combinedText.localizedCaseInsensitiveContains(query)
-            return matchesCategory && matchesQuery
+            return combinedText.localizedCaseInsensitiveContains(query)
         }
+    }
+
+    private var grouped: [(category: String, items: [ProtectionFinding])] {
+        Dictionary(grouping: filtered, by: \.category)
+            .map { (category: $0.key, items: $0.value) }
+            .sorted { $0.category < $1.category }
     }
 
     private var headerControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Address-backed static-analysis leads. Imported calls are matched to real ARM64 BL targets; strings include section addresses and file offsets. These findings do not prove runtim[...]")
+            Text("Address-backed static-analysis leads. Imported calls are matched to real ARM64 BL targets; strings include section addresses and file offsets. These findings do not prove runtime behavior.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Picker("Category", selection: $selectedCategory) {
@@ -174,6 +209,8 @@ struct ProtectionAnalysisSheet: View {
             }
             .pickerStyle(.menu)
             TextField("Search findings", text: $query)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
             Button {
                 showManualPatchWorkbench = true
             } label: {
@@ -206,7 +243,8 @@ struct ProtectionAnalysisSheet: View {
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
-            ForEach(finding.evidence, id: \.self) { item in
+            // Index-based IDs: duplicate evidence strings no longer collide.
+            ForEach(Array(finding.evidence.enumerated()), id: \.offset) { _, item in
                 Text(item)
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
@@ -233,27 +271,35 @@ struct ProtectionAnalysisSheet: View {
                 if isLoading {
                     VStack(spacing: 12) {
                         ProgressView()
-                        Text("Analyzing Mach-O evidence…")
+                        Text("Analyzing Mach-O evidenceâ¦")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if filtered.isEmpty {
-                    ContentUnavailableView(
-                        "No matching indicators",
-                        systemImage: "checkmark.shield",
-                        description: Text("No matching imported calls or strings match the current filters. Indirect calls, stripped metadata, and embedded frameworks may require separate analysi[...]")
-                    )
                 } else {
+                    // Controls always stay visible, so an empty result can still be re-filtered.
                     List {
                         Section {
                             headerControls
                         }
-                        ForEach(filtered) { finding in
+                        if filtered.isEmpty {
                             Section {
-                                findingView(finding)
-                            } header: {
-                                Text(finding.category)
+                                ContentUnavailableView(
+                                    "No matching indicators",
+                                    systemImage: "checkmark.shield",
+                                    description: Text("No imported calls or strings match the current filters. Indirect calls, stripped metadata, and embedded frameworks may require separate analysis.")
+                                )
+                                .frame(maxWidth: .infinity)
+                            }
+                        } else {
+                            ForEach(grouped, id: \.category) { group in
+                                Section {
+                                    ForEach(group.items) { finding in
+                                        findingView(finding)
+                                    }
+                                } header: {
+                                    Text(group.category)
+                                }
                             }
                         }
                     }
@@ -280,11 +326,15 @@ struct ProtectionAnalysisSheet: View {
             }
             #endif
             .task {
-                findings = await ProtectionAnalysis.scan(ipaURL: ipaURL)
+                // Detached so the heavy scan never runs on the main actor.
+                let url = ipaURL
+                let result = await Task.detached(priority: .userInitiated) {
+                    await ProtectionAnalysis.scan(ipaURL: url)
+                }.value
+                findings = result
                 isLoading = false
             }
         }
         .preferredColorScheme(.dark)
     }
-
 }
