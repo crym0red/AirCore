@@ -162,56 +162,99 @@ struct ProtectionAnalysisSheet: View {
         }
     }
 
+    private var headerControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Address-backed static-analysis leads. Imported calls are matched to real ARM64 BL targets; strings include section addresses and file offsets. These findings do not prove runtime behavior and no patches are applied.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Picker("Category", selection: $selectedCategory) {
+                ForEach(categories, id: \.self) { category in
+                    Text(category).tag(category)
+                }
+            }
+            .pickerStyle(.menu)
+            TextField("Search findings", text: $query)
+            Button {
+                showManualPatchWorkbench = true
+            } label: {
+                Label("Open Manual Patch Generator", systemImage: "wrench.and.screwdriver")
+                    .font(.subheadline.weight(.semibold))
+            }
+            #if DEBUG
+            Button {
+                showTestOnlyTrustConfiguration = true
+            } label: {
+                Label("Test-Only TLS Trust Configuration", systemImage: "checkmark.shield")
+                    .font(.subheadline.weight(.semibold))
+            }
+            #endif
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func findingView(_ finding: ProtectionFinding) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                Text(finding.title).font(.headline)
+                Spacer(minLength: 8)
+                Text(finding.confidence)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.trailing)
+            }
+            Text(finding.location)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            ForEach(finding.evidence, id: \.self) { item in
+                Text(item)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Text(finding.note)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button {
+                impactFinding = finding
+            } label: {
+                Label("Preview change & repercussions", systemImage: "arrow.left.arrow.right.circle")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .buttonStyle(.bordered)
+            .padding(.top, 2)
+        }
+        .padding(.vertical, 4)
+    }
+
     var body: some View {
         NavigationStack {
             Group {
                 if isLoading {
-                    VStack(spacing: 12) { ProgressView(); Text("Analyzing Mach-O evidence…").font(.subheadline).foregroundStyle(.secondary) }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if findings.isEmpty {
-                    ContentUnavailableView("No matching indicators", systemImage: "checkmark.shield",
-                        description: Text("No matching imported calls or strings were found in the main ARM64 binary. Indirect calls, stripped metadata, and embedded frameworks may require separate analysis."))
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Analyzing Mach-O evidence…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if filtered.isEmpty {
+                    ContentUnavailableView(
+                        "No matching indicators",
+                        systemImage: "checkmark.shield",
+                        description: Text("No matching imported calls or strings match the current filters. Indirect calls, stripped metadata, and embedded frameworks may require separate analysis.")
+                    )
                 } else {
                     List {
                         Section {
-                            Text("Address-backed static-analysis leads. Imported calls are matched to real ARM64 BL targets; strings include section addresses and file offsets. These findings do not prove runtime behavior and no patches are applied.")
-                                .font(.footnote).foregroundStyle(.secondary)
-                            Picker("Category", selection: $selectedCategory) {
-                                ForEach(categories, id: \.self) { Text($0).tag($0) }
-                            }
-                            .pickerStyle(.menu)
-                            TextField("Search findings", text: $query)
-                            Button { showManualPatchWorkbench = true } label: {
-                                Label("Open Manual Patch Generator", systemImage: "wrench.and.screwdriver")
-                                    .font(.subheadline.weight(.semibold))
-                            }
-                            Button { showTestOnlyTrustConfiguration = true } label: {
-                                Label("Test-Only TLS Trust Configuration", systemImage: "checkmark.shield")
-                                    .font(.subheadline.weight(.semibold))
-                            }
+                            headerControls
                         }
                         ForEach(filtered) { finding in
-                            Section { VStack(alignment: .leading, spacing: 8) {
-                                HStack(alignment: .top) {
-                                    Text(finding.title).font(.headline)
-                                    Spacer(minLength: 8)
-                                    Text(finding.confidence).font(.caption2).foregroundStyle(.orange).multilineTextAlignment(.trailing)
-                                }
-                                Text(finding.location).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
-                                ForEach(finding.evidence, id: \.self) { item in
-                                    Text(item).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                Text(finding.note).font(.caption).foregroundStyle(.secondary)
-                                Button {
-                                    impactFinding = finding
-                                } label: {
-                                    Label("Preview change & repercussions", systemImage: "arrow.left.arrow.right.circle")
-                                        .font(.subheadline.weight(.semibold))
-                                }
-                                .buttonStyle(.bordered)
-                                .padding(.top, 2)
-                            }.padding(.vertical, 4) } header: { Text(finding.category) }
+                            Section {
+                                findingView(finding)
+                            } header: {
+                                Text(finding.category)
+                            }
                         }
                     }
                     .scrollContentBackground(.hidden)
@@ -220,16 +263,22 @@ struct ProtectionAnalysisSheet: View {
             .background(Color.black)
             .navigationTitle("Protection Analysis")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Close") { dismiss() }
+                }
+            }
             .sheet(item: $impactFinding) { finding in
                 PatchImpactPreviewSheet(finding: finding, ipaURL: ipaURL)
             }
             .sheet(isPresented: $showManualPatchWorkbench) {
                 ManualPatchWorkbench(findings: findings, ipaURL: ipaURL)
             }
+            #if DEBUG
             .sheet(isPresented: $showTestOnlyTrustConfiguration) {
                 TestOnlyTrustConfigurationView()
             }
+            #endif
             .task {
                 findings = await ProtectionAnalysis.scan(ipaURL: ipaURL)
                 isLoading = false
@@ -237,4 +286,5 @@ struct ProtectionAnalysisSheet: View {
         }
         .preferredColorScheme(.dark)
     }
+
 }

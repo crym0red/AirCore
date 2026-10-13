@@ -33,6 +33,7 @@ jobs:
           fi
           ROOT="$(cd "$(dirname "$BS")" && pwd)"
           echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "LOG_PATH=$ROOT/build/xcodebuild.log" >> "$GITHUB_ENV"
           echo "Project root: $ROOT"
           ls "$ROOT"
 
@@ -55,7 +56,6 @@ jobs:
           [ -n "$IPA_FOUND" ] || { echo "ERROR: no IPA produced"; exit 1; }
           IPA_FOUND="$(cd "$(dirname "$IPA_FOUND")" && pwd)/$(basename "$IPA_FOUND")"
           echo "IPA_PATH=$IPA_FOUND" >> "$GITHUB_ENV"
-          echo "LOG_PATH=$(dirname "$(dirname "$IPA_FOUND")")/xcodebuild.log" >> "$GITHUB_ENV"
 
       - name: Verify IPA is unsigned
         shell: bash
@@ -92,6 +92,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: airshare-unsigned-build-log-${{ github.run_number }}
-          path: ${{ env.LOG_PATH }}
+          path: '**/build/xcodebuild.log'
           if-no-files-found: ignore
           retention-days: 14
