@@ -189,3 +189,47 @@ struct NativeInstallBanner: View {
         }
     }
 }
+
+// MARK: - Install method picker (signing sheet)
+
+/// Drop-down shown in the signing sheet. Same setting as Settings › Install Method.
+struct InstallMethodPicker: View {
+    @AppStorage(NativeInstaller.methodKey) private var method: String = "ota"
+    private let accent = Color(red: 1.0, green: 0.6, blue: 0.1)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("INSTALL METHOD").font(.system(size: 11, weight: .heavy)).kerning(2.2).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Image(systemName: method == "native" ? "point.3.connected.trianglepath.dotted" : "globe")
+                    .font(.system(size: 18, weight: .bold)).foregroundStyle(accent)
+                    .frame(width: 40, height: 40)
+                    .background(accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(method == "native" ? "Native · built-in VPN" : "OTA · itms-services")
+                        .font(.system(size: 16, weight: .semibold))
+                    Text(method == "native" ? "Installs straight to this device. No domain or TLS cert."
+                                            : "Installs through your AirShare domain and cert.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                Menu {
+                    Button { method = "ota" } label: {
+                        Label("OTA · itms-services", systemImage: method == "ota" ? "checkmark" : "globe")
+                    }
+                    Button { method = "native" } label: {
+                        Label("Native · built-in VPN", systemImage: method == "native" ? "checkmark" : "point.3.connected.trianglepath.dotted")
+                    }
+                } label: {
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 14, weight: .bold)).foregroundStyle(accent)
+                        .frame(width: 40, height: 40)
+                        .background(accent.opacity(0.14), in: Circle())
+                }
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(accent.opacity(0.35), lineWidth: 1))
+        }
+    }
+}
