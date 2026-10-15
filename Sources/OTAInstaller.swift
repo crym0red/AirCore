@@ -116,6 +116,13 @@ final class OTAInstaller: ObservableObject {
 
     func install(ipaURL: URL, bundleID: String, name: String, version: String, iconData: Data?) async throws {
         guard FileManager.default.fileExists(atPath: ipaURL.path) else { throw InstallError.ipaMissing }
+
+        // Settings › Install Method › Native: install straight over the built-in
+        // local VPN + device pairing, skipping the itms-services/OTA path.
+        if NativeInstaller.isSelected {
+            try await NativeInstaller.shared.install(ipaURL: ipaURL, bundleID: bundleID, name: name, version: version)
+            return
+        }
         try await validateServerPreconditions()
 
         let icon57  = Self.squarePNG(iconData, side: 57)
