@@ -16,8 +16,8 @@ REVISION = "837cf1e14d4875771dd5ee1b754a4c86215c5db3"
 
 def main():
     if not (KIT / ".git").exists():
-        if KIT.exists() and any(KIT.iterdir()):
-            raise SystemExit(f"{KIT} exists but is not a git checkout; remove it and rerun.")
+        # The CI cache restores IDeviceKit/.build before this runs, so the folder
+        # may already exist with only untracked build output in it. Init in place.
         KIT.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "init", "-q"], cwd=KIT, check=True)
         subprocess.run(["git", "remote", "add", "origin", URL], cwd=KIT, check=True)
