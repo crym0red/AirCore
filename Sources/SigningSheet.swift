@@ -505,6 +505,7 @@ struct SigningSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionLabel("SIGNING METHOD")
             savedBody
+            InstallMethodPicker()
         }
     }
 
@@ -533,6 +534,7 @@ struct SigningSheet: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
                 .padding(.horizontal, 6)
+                HiddenWhenNative {
                 HStack(alignment: .top, spacing: 0) {
                     Button { settingsJump = .ota } label: {
                         detailTile(
@@ -564,6 +566,7 @@ struct SigningSheet: View {
                 }
                 .background(surface)
                 .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                }
             }
             .padding(12)
             .background(surfaceRaised)
