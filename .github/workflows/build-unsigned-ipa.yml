@@ -37,6 +37,22 @@ jobs:
           echo "Project root: $ROOT"
           ls "$ROOT"
 
+      - name: Install Rust toolchain for native pairing core
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Build SideInstaller native FFI XCFramework
+        run: ./scripts/build-sideinstaller-native.sh
+
+      - name: Upload native framework build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aircore-sideinstaller-native-${{ github.run_number }}
+          path: build/native/SideInstallerFFI.xcframework
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Make build script executable
         working-directory: ${{ env.ROOT }}
         run: chmod +x ./build.sh

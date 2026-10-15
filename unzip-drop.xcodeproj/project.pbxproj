@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A1C0FFEE0000000000000001 /* SideInstallerFFI.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1C0FFEE0000000000000002 /* SideInstallerFFI.xcframework */; };
 		93CC6A3E34EC4349BBFC60C4 /* AVX512ObjcInternal.m in Sources */ = {isa = PBXBuildFile; fileRef = 8C7D82082434432C835A5512 /* AVX512ObjcInternal.m */; };
 		6D6D6D6D0000000000000001 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 6D6D6D6D0000000000000002 /* Crypto */; };
 		03865B4A66EB71AAB92A0450 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = E09A20DE3775398EFC274454 /* ZIPFoundation */; };
@@ -16,6 +17,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A1C0FFEE0000000000000002 /* SideInstallerFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SideInstallerFFI.xcframework; path = build/native/SideInstallerFFI.xcframework; sourceTree = SOURCE_ROOT; };
 		8C7D82082434432C835A5512 /* AVX512ObjcInternal.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = AVX512ObjcInternal.m; sourceTree = "<group>"; };
 		2456595988ACDF120DEEB9B4 /* unzip-drop.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "unzip-drop.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		7682B969F8DF974AA9306D80 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -69,6 +71,7 @@
 			children = (
 				CF0E7EE12920CA355A866327 /* Sources */,
 				7682B969F8DF974AA9306D80 /* Assets.xcassets */,
+				A1C0FFEE0000000000000002 /* SideInstallerFFI.xcframework */,
 				93A01B663D5573D864F29811 /* Info.plist */,
 				115CB1AE83B2B9BBFB0A9A95 /* unzip-drop.entitlements */,
 				CFC214850958184838F815CE /* Products */,
