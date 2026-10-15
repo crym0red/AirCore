@@ -1,5 +1,4 @@
 import UIKit
-import NimbleExtensions
 
 @MainActor
 enum VPNReconnectShareSheet {
@@ -8,7 +7,7 @@ enum VPNReconnectShareSheet {
     static func present(shortcutName: String, completion: @escaping @MainActor (Bool) -> Void) -> Bool {
         guard UIApplication.shared.applicationState == .active,
               controller == nil,
-              let presenter = UIApplication.topViewController(),
+              let presenter = topViewController(),
               presenter.viewIfLoaded?.window != nil,
               !presenter.isBeingDismissed, !presenter.isBeingPresented else { return false }
 
@@ -33,6 +32,15 @@ enum VPNReconnectShareSheet {
         controller = sheet
         presenter.present(sheet, animated: true)
         return true
+    }
+
+    /// Frontmost presented view controller of the active window scene.
+    private static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        var top = scene?.windows.first(where: \.isKeyWindow)?.rootViewController ?? scene?.windows.first?.rootViewController
+        while let next = top?.presentedViewController { top = next }
+        return top
     }
 
     static func dismiss() {
