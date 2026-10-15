@@ -236,6 +236,7 @@ private struct GitHubSettingsScreen: View {
                 case .dylibTemplate: DylibTemplateScreen()
                 case .ipaTemplate:   IPATemplateScreen()
                 case .tutorials:     TutorialsListScreen()
+                case .nativeInstall: NativeInstallScreen()
                 }
             }
             .environmentObject(config)
