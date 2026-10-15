@@ -17,7 +17,7 @@ private enum Screen: Identifiable, Hashable {
     case about, repo, token
     case dylibTemplate, ipaTemplate
     case certificates, otaDomain, certInspector, transparency, recoverData
-    case tutorials, extras, tableView
+    case tutorials, extras, nativeInstall
     var id: String {
         switch self {
         case .github: return "github"; case .account: return "account"; case .localZSignAPI: return "local-zsign-api"
@@ -27,13 +27,12 @@ private enum Screen: Identifiable, Hashable {
         case .certificates: return "certs"; case .otaDomain: return "ota"; case .certInspector: return "inspect"; case .transparency: return "transparency"; case .recoverData: return "recover"
         case .tutorials: return "tutorials"
         case .extras: return "extras"
-        case .tableView: return "table-view"
+        case .nativeInstall: return "native-install"
         }
     }
 }
 
 struct SettingsView: View {
-    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @EnvironmentObject var config: Config
     @EnvironmentObject var session: Session
     @ObservedObject private var certs = CertificateStore.shared
@@ -55,17 +54,26 @@ struct SettingsView: View {
                             SettingsRow(icon: account.isLoggedIn ? "person.crop.circle.fill" : "person.crop.circle.badge.plus",
                                         title: "User Settings",
                                         subtitle: account.isLoggedIn ? "\(account.username ?? "") · account and device settings" : "Sign in or register") { screen = .account }
-                            SettingsRow(icon: "plus.app.fill", title: "Request Certificate",
-                                        subtitle: "Submit or review your certificate requests") { screen = .signingRequestCertificate }
-                            SettingsRow(icon: "sparkles", title: "Extras",
-                                        subtitle: "Auto-update signing") { screen = .extras }
+                        }
+
+                        SettingsSection("Staff") {
+                            SettingsRow(icon: "chevron.left.forwardslash.chevron.right", title: "GitHub",
+                                        subtitle: githubSubtitle) { screen = .github }
                         }
 
                         SettingsSection("Signing") {
                             SettingsRow(icon: "checkmark.seal.fill", title: "Certificates",
                                         subtitle: certs.active?.name ?? "No signing certificate") { screen = .certificates }
-                            SettingsRow(icon: "gearshape.fill", title: "Settings",
-                                        subtitle: "Local ZSign API · AirShare Domain") { screen = .tableView }
+                            SettingsRow(icon: "plus.app.fill", title: "Request Certificate",
+                                        subtitle: "Submit or review your certificate requests") { screen = .signingRequestCertificate }
+                            SettingsRow(icon: "bolt.horizontal.circle.fill", title: "Local ZSign API",
+                                        subtitle: "127.0.0.1:\(LocalZSignAPI.shared.port) · loopback signing control") { screen = .localZSignAPI }
+                            SettingsRow(icon: "arrow.down.app.fill", title: "Install Method",
+                                        subtitle: NativeInstaller.isSelected ? "Native · built-in VPN + device pairing" : "OTA · itms-services over AirShare domain") { screen = .nativeInstall }
+                            SettingsRow(icon: "network", title: "AirShare Domain",
+                                        subtitle: "\(ServerConfig.installHost) · certbot via Actions") { screen = .otaDomain }
+                            SettingsRow(icon: "sparkles", title: "Extras",
+                                        subtitle: "Theme · Auto-update signing") { screen = .extras }
                         }
 
                         SettingsSection("Support") {
@@ -111,7 +119,7 @@ struct SettingsView: View {
                 case .ipaTemplate:   IPATemplateScreen()
                 case .tutorials: TutorialsListScreen()
                 case .extras: ExtrasScreen()
-                case .tableView: TableViewSettingsScreen()
+                case .nativeInstall: NativeInstallScreen()
                 }
             }
             .environmentObject(config)
@@ -217,7 +225,7 @@ private struct GitHubSettingsScreen: View {
         .fullScreenCover(item: $screen) { s in
             Group {
                 switch s {
-                case .github, .account, .localZSignAPI, .about, .certificates, .otaDomain, .extras, .tableView:
+                case .github, .account, .localZSignAPI, .about, .certificates, .otaDomain, .extras:
                     EmptyView()
                 case .signingRequestCertificate: CertificateRequestView()
                 case .repo:  RepoScreen()
@@ -363,6 +371,57 @@ private struct SettingsLink: View {
     }
 }
 
+private struct AppearanceControls: View {
+    @ObservedObject private var theme = AppTheme.shared
+
+    private func row<T: View>(icon: String, title: String, subtitle: String, @ViewBuilder trailing: () -> T) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).font(.system(size: 19, weight: .semibold)).foregroundStyle(Theme.accent).frame(width: 30)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                Text(subtitle).font(.system(size: 12)).foregroundStyle(Theme.subtle)
+            }
+            Spacer(minLength: 8)
+            trailing()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            row(icon: "circle.fill", title: "Accent Color", subtitle: "Choose your preferred accent") {
+                HStack(spacing: 7) {
+                    ForEach(Array(AppTheme.presets.prefix(5)), id: \.self) { hex in
+                        Button { theme.accentHex = hex } label: {
+                            Circle().fill(Color(hex: hex)).frame(width: 27, height: 27)
+                                .overlay(Circle().stroke(theme.accentHex.uppercased() == hex.uppercased() ? Theme.text : Color.clear, lineWidth: 2))
+                        }.buttonStyle(.plain)
+                    }
+                }
+            }
+            Divider().overlay(Theme.stroke)
+            row(icon: "sun.max.fill", title: "Appearance", subtitle: "Light / Dark") {
+                Picker("Appearance", selection: Binding(get: { theme.isDark ? 1 : 0 }, set: { theme.isDark = $0 == 1 })) {
+                    Text("☀︎").tag(0); Text("☾").tag(1)
+                }
+                .pickerStyle(.segmented).frame(width: 112)
+            }
+            Divider().overlay(Theme.stroke)
+            row(icon: "photo.fill", title: "Background", subtitle: "Solid / Grid / Particles") {
+                HStack(spacing: 7) {
+                    ForEach(ThemeBackground.allCases, id: \.rawValue) { bg in
+                        Button { theme.background = bg } label: {
+                            Image(systemName: bg.icon).font(.system(size: 14, weight: .bold)).foregroundStyle(theme.background == bg ? Theme.accent : Theme.subtle)
+                                .frame(width: 29, height: 29).background(Color.white.opacity(0.05)).clipShape(Circle())
+                                .overlay(Circle().stroke(theme.background == bg ? Theme.accent : Theme.stroke, lineWidth: 1))
+                        }.buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+}
+
 private struct SourceUpdateControls: View {
     @ObservedObject private var watcher = LocalSourceUpdateWatcher.shared
     @ObservedObject private var certs = CertificateStore.shared
@@ -502,40 +561,15 @@ private struct StatusFooter: View {
     }
 }
 
-// MARK: - Signing Settings (signing tools)
-
-private struct TableViewSettingsScreen: View {
-    @EnvironmentObject var config: Config
-    @EnvironmentObject var session: Session
-    @State private var showAPI = false
-    @State private var showDomain = false
-
-    var body: some View {
-        DetailScreen(title: "Settings") {
-            VStack(alignment: .leading, spacing: 0) {
-                SettingsSection("Signing tools") {
-                    SettingsRow(icon: "bolt.horizontal.circle.fill", title: "Local ZSign API",
-                                subtitle: "127.0.0.1:\(LocalZSignAPI.shared.port) · loopback signing control") { showAPI = true }
-                    SettingsRow(icon: "network", title: "AirShare Domain",
-                                subtitle: "\(ServerConfig.installHost) · certbot via Actions") { showDomain = true }
-                }
-            }
-        }
-        .fullScreenCover(isPresented: $showAPI) {
-            LocalZSignAPISettingsView().environmentObject(config).environmentObject(session).preferredColorScheme(.dark)
-        }
-        .fullScreenCover(isPresented: $showDomain) {
-            OTADomainScreen().environmentObject(config).environmentObject(session).preferredColorScheme(.dark)
-        }
-    }
-}
-
-// MARK: - Extras (auto-update signing)
+// MARK: - Extras (theme + auto-update signing)
 
 private struct ExtrasScreen: View {
     var body: some View {
         DetailScreen(title: "Extras") {
             VStack(alignment: .leading, spacing: 0) {
+                SettingsSection("Theme") {
+                    AppearanceControls()
+                }
                 SettingsSection("Auto-Update Signing") {
                     SourceUpdateControls()
                 }
@@ -547,7 +581,6 @@ private struct ExtrasScreen: View {
 // MARK: - Detail screen shell
 
 private struct DetailScreen<Content: View>: View {
-    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     let title: String
     @ViewBuilder var content: Content
     @Environment(\.dismiss) private var dismiss
@@ -627,106 +660,61 @@ private func statusLine(_ name: String, _ ok: Bool) -> some View {
 }
 
 private struct AboutScreen: View {
-    @Environment(\.openURL) private var openURL
-
-    private var version: String {
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? Theme.appVersion
-    }
-    private var iosVersion: String { UIDevice.current.systemVersion }
-
-    private struct Credit: Identifiable {
-        let id = UUID()
-        let name: String, blurb: String, asset: String, symbol: String, url: String
-    }
-    private let credits: [Credit] = [
-        Credit(name: "MRZefv", blurb: "Built AirShare. Sign anything, keep it local.", asset: "airshare_mark", symbol: "person.fill", url: "https://airshare.lol"),
-        Credit(name: "DELvEK", blurb: "Trusted partner. Respected, protected apps updated daily with screenshots.", asset: "delvek_logo", symbol: "pawprint.fill", url: "https://delvek.net"),
-    ]
-    private let sponsors: [(String, Color)] = [
-        ("MYKALL", Color(red: 0.42, green: 0.85, blue: 0.45)),
-        ("JIMEDUDE.", Color(red: 0.40, green: 0.72, blue: 0.95)),
-        ("DELvEK", Color(red: 0.74, green: 0.35, blue: 0.88)),
-    ]
-
+    @State private var status: [String: Any]?
+    @State private var statusFailed = false
     var body: some View {
         DetailScreen(title: "About") {
-            VStack(spacing: 0) {
-                // App icon · name · version | iOS
-                Group {
-                    if UIImage(named: "airshare_logo") != nil {
-                        Image("airshare_logo").resizable().scaledToFill()
+            Card {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Service status").font(.headline).foregroundStyle(Theme.text)
+                    if let st = status {
+                        statusLine("API", (st["ok"] as? Bool) ?? false || (st["db"] as? Bool) ?? false)
+                        statusLine("Database", (st["db"] as? Bool) ?? false)
+                        if let n = st["users"] as? Int { Text("\(n) registered accounts").font(.caption).foregroundStyle(Theme.subtle) }
+                    } else if statusFailed {
+                        statusLine("API", false)
+                        Text("airshare.lol unreachable").font(.caption).foregroundStyle(.orange)
                     } else {
-                        ZStack { Theme.accent; Image(systemName: "archivebox.fill").font(.system(size: 44, weight: .bold)).foregroundStyle(.black) }
+                        HStack(spacing: 8) { ProgressView().tint(Theme.accent); Text("Checking airshare.lol…").font(.caption).foregroundStyle(Theme.subtle) }
                     }
                 }
-                .frame(width: 120, height: 120)
-                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                .shadow(color: Theme.accent.opacity(0.35), radius: 22)
-                .padding(.top, 18)
-
-                Text(Theme.appName).font(.system(size: 34, weight: .bold)).foregroundStyle(Theme.text).padding(.top, 18)
-                HStack(spacing: 10) {
-                    Text("Version \(version)")
-                    Text("|").foregroundStyle(Theme.subtle)
-                    Text("iOS \(iosVersion)")
-                }
-                .font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.text.opacity(0.9)).padding(.top, 8)
-
-                // Credits
-                sectionLabel("CREDITS").padding(.top, 54)
-                Rectangle().fill(Theme.stroke).frame(height: 0.5)
-                ForEach(Array(credits.enumerated()), id: \.element.id) { idx, c in
-                    Button { if let u = URL(string: c.url) { openURL(u) } } label: {
-                        HStack(spacing: 14) {
-                            Group {
-                                if UIImage(named: c.asset) != nil { Image(c.asset).resizable().scaledToFill() }
-                                else { ZStack { Color.white.opacity(0.08); Image(systemName: c.symbol).foregroundStyle(Theme.subtle) } }
-                            }
-                            .frame(width: 46, height: 46).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(c.name).font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.text)
-                                Text(c.blurb).font(.system(size: 14)).foregroundStyle(Theme.subtle).lineLimit(2).multilineTextAlignment(.leading)
-                            }
-                            Spacer(minLength: 6)
-                            Image(systemName: "arrow.up.right.square").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.accent)
-                        }
-                        .padding(.vertical, 14).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    if idx < credits.count - 1 { Rectangle().fill(Theme.stroke).frame(height: 0.5).padding(.leading, 60) }
-                }
-                Rectangle().fill(Theme.stroke).frame(height: 0.5).padding(.leading, 60)
-
-                // Sponsors
-                sectionLabel("SPONSORS").padding(.top, 34)
-                HStack(spacing: 0) {
-                    ForEach(Array(sponsors.enumerated()), id: \.offset) { i, sp in
-                        Text(sp.0).font(.system(size: 22, weight: .semibold)).foregroundStyle(sp.1)
-                        if i < sponsors.count - 1 { Text(", ").font(.system(size: 22)).foregroundStyle(Theme.subtle) }
-                    }
-                    Spacer(minLength: 0)
-                }
-                .lineLimit(1).minimumScaleFactor(0.6)
-                .padding(.top, 14).padding(.horizontal, 4)
-
-                HStack(spacing: 14) {
-                    Rectangle().fill(Theme.stroke).frame(height: 1)
-                    Image(systemName: "cylinder.fill").font(.system(size: 22)).foregroundStyle(Theme.subtle)
-                    Rectangle().fill(Theme.stroke).frame(height: 1)
-                }
-                .padding(.top, 36)
-
-                Text("It puts the lotion on the dirty skin or the sponsor gets it again!")
-                    .font(.system(size: 14, design: .monospaced)).foregroundStyle(Theme.subtle)
-                    .multilineTextAlignment(.center).padding(.top, 26).padding(.bottom, 20)
             }
-            .frame(maxWidth: .infinity)
+            .task {
+                guard let u = URL(string: ZefvAccount.apiBase + "status") else { statusFailed = true; return }
+                var req = URLRequest(url: u); req.timeoutInterval = 8; req.cachePolicy = .reloadIgnoringLocalCacheData
+                if let (d, _) = try? await URLSession.shared.data(for: req), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] { status = o }
+                else { statusFailed = true }
+            }
+            Card {
+                HStack(spacing: 14) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.accent)
+                        Image(systemName: "archivebox.fill").font(.system(size: 26, weight: .bold)).foregroundStyle(.black)
+                    }
+                    .frame(width: 58, height: 58)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(Theme.appName).font(.title3.bold()).foregroundStyle(Theme.text)
+                        Text("Version \(Theme.appVersion)").font(.caption).foregroundStyle(Theme.subtle)
+                        Text("by MRzefv").font(.caption).foregroundStyle(Theme.accent)
+                    }
+                    Spacer()
+                }
+            }
+            Card {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("What it does").font(.headline).foregroundStyle(Theme.text)
+                    Text("Drop a zip, extract it on-device, then push the files straight into a GitHub repo as a single commit. Built for working from an iPhone without a Mac.")
+                        .font(.caption).foregroundStyle(Theme.subtle)
+                }
+            }
+            Card {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Privacy").font(.headline).foregroundStyle(Theme.text)
+                    Text("Nothing leaves the device except pushes to api.github.com using your own token. No analytics, no accounts.")
+                        .font(.caption).foregroundStyle(Theme.subtle)
+                }
+            }
         }
-    }
-
-    private func sectionLabel(_ t: String) -> some View {
-        HStack { Text(t).font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.subtle).padding(.leading, 4); Spacer() }
-            .padding(.bottom, 12)
     }
 }
 
@@ -1705,6 +1693,136 @@ private struct TransparencyScreen: View {
         VStack(alignment: .leading, spacing: 1) {
             Text(k).font(.caption2.weight(.semibold)).foregroundStyle(Theme.subtle)
             Text(v).font(.caption).foregroundStyle(Theme.text)
+        }
+    }
+}
+
+
+// MARK: - Install method (OTA vs native device install)
+
+private struct NativeInstallScreen: View {
+    @AppStorage(NativeInstaller.methodKey) private var method = "ota"
+    @ObservedObject private var manager = DeviceInstallationManager.shared
+    @ObservedObject private var pairing = DevicePairingService.shared
+    @ObservedObject private var installer = NativeInstaller.shared
+    @ObservedObject private var reconnect = VPNReconnectCoordinator.shared
+    @AppStorage(VPNReconnectCoordinator.enabledKey) private var reconnectOn = false
+    @AppStorage(VPNReconnectCoordinator.shortcutNameKey) private var shortcutName = VPNReconnectCoordinator.defaultShortcutName
+    @AppStorage(VPNReconnectCoordinator.presentationKey) private var presentation = VPNReconnectPresentation.shareSheet.rawValue
+    @State private var confirmReset = false
+
+    private var busy: Bool { manager.isBusy || installer.isActive }
+
+    var body: some View {
+        NavigationStack {
+            TableScreen(title: "Install Method", root: true) {
+                Section {
+                    Picker(selection: $method) {
+                        Label("OTA · itms-services", systemImage: "globe").tag("ota")
+                        Label("Native · built-in VPN", systemImage: "iphone.and.arrow.forward").tag("native")
+                    } label: {
+                        Label("Method", systemImage: "arrow.down.app.fill").foregroundStyle(Theme.text)
+                    }
+                    .pickerStyle(.menu).listRowBackground(Theme.card)
+                    .disabled(busy)
+                    TNote(text: method == "native"
+                          ? "Installs straight to this device over a local VPN and a device pairing — no AirShare domain, TLS cert or itms-services prompt. Needs a build signed with a profile that allows Network Extensions (packet-tunnel-provider)."
+                          : "Serves the signed IPA from the on-device HTTPS server and hands iOS an itms-services link.")
+                }
+
+                if method == "native" {
+                    Section {
+                        Picker(selection: $manager.mode) {
+                            ForEach(DeviceConnectionMode.allCases) { Text($0.title).tag($0) }
+                        } label: {
+                            Label("Connection", systemImage: "point.3.connected.trianglepath.dotted").foregroundStyle(Theme.text)
+                        }
+                        .pickerStyle(.menu).listRowBackground(Theme.card)
+                        .disabled(busy)
+                        TNote(text: manager.mode == .builtIn
+                              ? "Built-in manages a local VPN inside AirShare. Creating a pairing on-device needs iOS 27+, Developer Mode and Local Network access. The VPN may replace another active VPN."
+                              : "Manual uses an imported pairingFile.plist in AirShare's Documents folder and your own local VPN.")
+                    }
+
+                    Section {
+                        statusRows
+                        if manager.mode == .builtIn {
+                            TButton(title: "Forget Built-in Pairing", icon: "trash", role: .destructive, enabled: !busy) { confirmReset = true }
+                        }
+                    }
+
+                    if manager.mode == .builtIn { reconnectSection }
+                }
+            }
+            .confirmationDialog("Forget this device's saved pairing?", isPresented: $confirmReset, titleVisibility: .visible) {
+                Button("Forget Pairing", role: .destructive) { Task { await manager.resetPairing() } }
+            } message: {
+                Text("The next native install will ask you to pair again.")
+            }
+        }
+    }
+
+    @ViewBuilder private var statusRows: some View {
+        if let notice = manager.setupNotice { TNote(text: notice, tint: .orange) }
+        switch manager.phase {
+        case .pairing:
+            if let pin = pairing.pin {
+                TRow(k: "Pairing code", v: pin, tint: Theme.accent)
+                TNote(text: "Enter this code in Settings › Privacy & Security › Developer Mode › Pair with AirShare.")
+            } else {
+                TStatusRow(ok: false, text: "Open Settings › Privacy & Security › Developer Mode and choose Pair with AirShare…")
+            }
+            TButton(title: "Cancel Setup", icon: "xmark.circle", role: .destructive) { manager.cancelSetup() }
+        case .connecting:
+            TButton(title: "Connecting to this device…", icon: "bolt.horizontal", busy: true) {}
+            TNote(text: "Allow the VPN configuration if iOS asks.")
+            TButton(title: "Cancel Setup", icon: "xmark.circle", role: .destructive) { manager.cancelSetup() }
+        case .failed(let message):
+            TStatusRow(ok: false, text: message)
+            TButton(title: "Retry Setup", icon: "arrow.clockwise", enabled: !busy) { Task { await manager.setUp() } }
+        case .ready:
+            TStatusRow(ok: true, text: "Connected")
+        case .configured:
+            TStatusRow(ok: true, text: "Setup complete — AirShare reconnects automatically on install.")
+        case .idle:
+            TButton(title: "Set Up Connection", icon: "bolt.horizontal.circle.fill", enabled: !busy) { Task { await manager.setUp() } }
+            TNote(text: "AirShare also connects automatically on the first native install.")
+        }
+        if installer.job != nil {
+            TRow(k: installer.job?.name ?? "Install", v: installer.stage.label)
+        }
+    }
+
+    @ViewBuilder private var reconnectSection: some View {
+        Section {
+            Toggle(isOn: $reconnectOn) {
+                Label("Reconnect VPN after install", systemImage: "arrow.triangle.2.circlepath").foregroundStyle(Theme.text)
+            }
+            .tint(Theme.accent).listRowBackground(Theme.card)
+            .onChange(of: reconnectOn) { on in
+                if on { Task { await reconnect.requestNotificationPermission() } } else { reconnect.disable() }
+            }
+            if reconnectOn {
+                Picker(selection: $presentation) {
+                    ForEach(VPNReconnectPresentation.allCases) { Text($0.title).tag($0.rawValue) }
+                } label: { Text("Method").foregroundStyle(Theme.text) }
+                .pickerStyle(.menu).listRowBackground(Theme.card)
+                TField(label: "Shortcut", text: $shortcutName, placeholder: VPNReconnectCoordinator.defaultShortcutName)
+                TButton(title: presentation == VPNReconnectPresentation.shareSheet.rawValue ? "Test Share Sheet" : "Test Shortcut",
+                        icon: "play.circle", enabled: manager.canReconnectVPN && !installer.isActive &&
+                        !shortcutName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                    Task { await manager.testVPNReconnectShortcut() }
+                }
+                if reconnect.pendingShortcutName != nil {
+                    TButton(title: "Reconnect VPN", icon: "network", enabled: manager.canReconnectVPN && !installer.isActive) {
+                        Task { await reconnect.runPendingShortcut() }
+                    }
+                }
+                if let notice = reconnect.notice { TNote(text: notice) }
+            }
+            TNote(text: "Create a shortcut (default name “Restore Tailscale”) with your VPN's Connect action, enable Show in Share Sheet and allow Text input. AirShare offers it after all device work ends and its local VPN disconnects.")
+        } header: {
+            Text("Restore your VPN").font(.caption.weight(.semibold)).foregroundStyle(Theme.subtle)
         }
     }
 }

@@ -51,6 +51,16 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
                                             didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
         let userInfo = response.notification.request.content.userInfo
+        // "Reconnect VPN" reminder left by the native installer.
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+           let id = userInfo["ksignVPNReconnectID"] as? String,
+           response.notification.request.identifier == VPNReconnectCoordinator.notificationIdentifier + "." + id {
+            Task { @MainActor in
+                await VPNReconnectCoordinator.shared.notificationTapped(id: id)
+                completionHandler()
+            }
+            return
+        }
         guard let raw = userInfo["deepLink"] as? String, let url = URL(string: raw) else {
             completionHandler()
             return

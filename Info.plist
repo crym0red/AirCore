@@ -14,6 +14,13 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.mrzefv.airshare.source-scan</string>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER).userTask.*</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>AirShare uses the local network to pair with this device for native app installation.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_remotepairing-pairable-host._tcp</string>
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
@@ -72,14 +79,6 @@
 				<string>msign</string>
 			</array>
 		</dict>
-	</array>
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<!-- TrollStore's own inter-app install URL scheme (apple-magnifier://install?url=...).
-		     Declared here so -canOpenURL: can actually detect whether TrollStore is
-		     installed — without this entry iOS silently reports false for every app
-		     not already linked, which is why that check has to be declared up front. -->
-		<string>apple-magnifier</string>
 	</array>
 </dict>
 </plist>

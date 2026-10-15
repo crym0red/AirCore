@@ -2,6 +2,12 @@ name: Build Unsigned IPA
 
 on:
   workflow_dispatch:
+    inputs:
+      adhoc_entitlements:
+        description: "Ad-hoc sign with entitlements so re-signers keep packet-tunnel-provider (native install)"
+        type: boolean
+        required: false
+        default: true
   push:
     branches: [ main, master ]
 
@@ -11,7 +17,7 @@ permissions:
 jobs:
   build-unsigned-ipa:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -37,23 +43,22 @@ jobs:
           echo "Project root: $ROOT"
           ls "$ROOT"
 
-      - name: Install Rust toolchain for native pairing core
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+          python-version: '3.13'
 
-      - name: Build SideInstaller native FFI XCFramework
+      - name: Native build cache (idevice Rust library)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ROOT }}/.build/device-native
+            ${{ env.ROOT }}/IDeviceKit/.build/IDevice.xcframework
+          key: idevice-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Native/Device/source.json', '**/Native/Device/ksign_pairing.rs', '**/.github/scripts/build_device_native.py') }}
+
+      - name: Verify native cache fingerprint logic
         working-directory: ${{ env.ROOT }}
-        shell: bash
-        run: bash ./scripts/build-sideinstaller-native.sh
-
-      - name: Upload native framework build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: aircore-sideinstaller-native-${{ github.run_number }}
-          path: build/native/SideInstallerFFI.xcframework
-          if-no-files-found: error
-          retention-days: 14
+        run: python3 .github/scripts/test_native_cache.py
 
       - name: Make build script executable
         working-directory: ${{ env.ROOT }}
@@ -65,6 +70,7 @@ jobs:
           APP_NAME: unzip-drop
           SCHEME: unzip-drop
           CONFIG: Release
+          ADHOC_ENTITLEMENTS: ${{ inputs.adhoc_entitlements == false && '0' || '1' }}
         run: ./build.sh
 
       - name: Locate IPA
@@ -86,8 +92,13 @@ jobs:
           APP=$(find /tmp/airshare-ipa-check/Payload -maxdepth 1 -type d -name '*.app' -print -quit)
           test -n "$APP"
           test -f "$APP/Info.plist"
-          if [ -d "$APP/_CodeSignature" ]; then
-            echo "ERROR: _CodeSignature exists in unsigned IPA"
+          if [ ! -d "$APP/PlugIns/AirShareDeviceTunnel.appex" ]; then
+            echo "ERROR: AirShareDeviceTunnel.appex missing from IPA (native install would not work)"
+            exit 1
+          fi
+          # Ad-hoc entitlement signing (default) leaves a throw-away _CodeSignature.
+          if [ "${{ inputs.adhoc_entitlements }}" = "false" ] && [ -d "$APP/_CodeSignature" ]; then
+            echo "ERROR: _CodeSignature exists but ad-hoc signing was disabled"
             exit 1
           fi
           if [ -f "$APP/embedded.mobileprovision" ]; then

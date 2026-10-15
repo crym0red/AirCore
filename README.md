@@ -26,12 +26,7 @@ Patch proposals are deliberately kept as an in-memory/local manifest in this vie
 
 yur
 
-## AI Hook Catalog and local diagnostic dylib workflow
+## Native install
 
-AirCore includes an on-device Foundation Models-assisted catalog scanner for `.txt` and `.md` binary-analysis reports. The catalog itself is bundled as `Sources/HookCatalog.json`; deterministic matching remains available if Apple Foundation Models is unavailable. The model receives only the report text and bundled catalog matches in the local app process; the feature does not upload reports.
-
-From the signing sheet's CFG / Classes & Methods browser, open **AI Hook Catalog · Scan TXT / Markdown** to import a report and review candidate diagnostic templates. Verify any suggested class, selector, method encoding, and address against the actual binary before selecting methods in the Objective-C browser.
-
-The Objective-C method browser can export a generated diagnostic swizzle project ZIP. That ZIP includes `.github/workflows/build-dylib.yml`, which builds an iOS arm64 `GeneratedSwizzle.dylib` and uploads it as a GitHub Actions artifact. Put the ZIP's contents into a GitHub repository and push to `main`/`master`, or manually run the workflow. Download `GeneratedSwizzle-ios-arm64` from the Actions run, then in AirCore's signing sheet choose **Dylib Injection → Add library (.dylib, .framework)** and select the built dylib.
-
-Generated swizzles are intended as diagnostic instrumentation: they log a selected Objective-C call and forward to the captured original implementation. The generator does not automatically alter StoreKit or entitlement outcomes. Generated method signatures currently use placeholders in some cases; verify ABI types against the actual runtime encoding or authoritative headers before loading into a test app. Build success alone does not prove runtime compatibility.
+AirShare can install signed apps directly on-device (built-in local VPN + device pairing) as an alternative to OTA.
+Settings › Install Method. See `NATIVE_INSTALL.md`.

@@ -7,48 +7,58 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A1C0FFEE0000000000000001 /* SideInstallerFFI.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1C0FFEE0000000000000002 /* SideInstallerFFI.xcframework */; };
 		93CC6A3E34EC4349BBFC60C4 /* AVX512ObjcInternal.m in Sources */ = {isa = PBXBuildFile; fileRef = 8C7D82082434432C835A5512 /* AVX512ObjcInternal.m */; };
 		6D6D6D6D0000000000000001 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 6D6D6D6D0000000000000002 /* Crypto */; };
 		03865B4A66EB71AAB92A0450 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = E09A20DE3775398EFC274454 /* ZIPFoundation */; };
 		424653534C00000000000001 /* OpenSSL in Frameworks */ = {isa = PBXBuildFile; productRef = 50524F4453534C0000000001 /* OpenSSL */; };
 		5641504F520000000000001 /* Vapor in Frameworks */ = {isa = PBXBuildFile; productRef = 5641504F52500000000001 /* Vapor */; };
 		A403726B2E112543E3434DCA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7682B969F8DF974AA9306D80 /* Assets.xcassets */; };
+		AD5E00000000000000000001 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5E0000000000000000000A /* PacketTunnelProvider.swift */; };
+		AD5E00000000000000000002 /* LocalPacketReflection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5E0000000000000000000B /* LocalPacketReflection.swift */; };
+		AD5E00000000000000000003 /* AirShareDeviceTunnel.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AD5E0000000000000000000E /* AirShareDeviceTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		AD5E00000000000000000004 /* IDeviceSwift in Frameworks */ = {isa = PBXBuildFile; productRef = AD5E0000000000000000003D /* IDeviceSwift */; };
+		AD5E00000000000000000005 /* IDevice in Frameworks */ = {isa = PBXBuildFile; productRef = AD5E0000000000000000003E /* IDevice */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		AD5E00000000000000000028 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D7C5B6E417CC3AE86EBD1F76 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AD5E0000000000000000001E;
+			remoteInfo = AirShareDeviceTunnel;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AD5E00000000000000000021 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AD5E00000000000000000003 /* AirShareDeviceTunnel.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
-		A1C0FFEE0000000000000002 /* SideInstallerFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SideInstallerFFI.xcframework; path = build/native/SideInstallerFFI.xcframework; sourceTree = SOURCE_ROOT; };
 		8C7D82082434432C835A5512 /* AVX512ObjcInternal.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = AVX512ObjcInternal.m; sourceTree = "<group>"; };
 		2456595988ACDF120DEEB9B4 /* unzip-drop.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "unzip-drop.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		7682B969F8DF974AA9306D80 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		93A01B663D5573D864F29811 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		115CB1AE83B2B9BBFB0A9A95 /* unzip-drop.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "unzip-drop.entitlements"; sourceTree = "<group>"; };
+		AD5E0000000000000000000A /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
+		AD5E0000000000000000000B /* LocalPacketReflection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPacketReflection.swift; sourceTree = "<group>"; };
+		AD5E0000000000000000000C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AD5E0000000000000000000D /* AirShareDeviceTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AirShareDeviceTunnel.entitlements; sourceTree = "<group>"; };
+		AD5E0000000000000000000E /* AirShareDeviceTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AirShareDeviceTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		CA75707E000000000000001C /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				"Capstone/arch/AArch64/AArch64GenAsmWriter.inc",
-				"Capstone/arch/AArch64/AArch64GenCSAliasMnemMap.inc",
-				"Capstone/arch/AArch64/AArch64GenCSFeatureName.inc",
-				"Capstone/arch/AArch64/AArch64GenCSMappingInsn.inc",
-				"Capstone/arch/AArch64/AArch64GenCSMappingInsnName.inc",
-				"Capstone/arch/AArch64/AArch64GenCSMappingInsnOp.inc",
-				"Capstone/arch/AArch64/AArch64GenCSOpGroup.inc",
-				"Capstone/arch/AArch64/AArch64GenDisassemblerTables.inc",
-				"Capstone/arch/AArch64/AArch64GenInstrInfo.inc",
-				"Capstone/arch/AArch64/AArch64GenRegisterInfo.inc",
-				"Capstone/arch/AArch64/AArch64GenSubtargetInfo.inc",
-				"Capstone/arch/AArch64/AArch64GenSystemOperands.inc",
-				"Capstone/arch/AArch64/AArch64GenSystemRegister.inc",
-			);
-			target = 7161E63E34B4EFFA56B6844D /* unzip-drop */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		CF0E7EE12920CA355A866327 /* Sources */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources; sourceTree = "<group>"; exceptions = (CA75707E000000000000001C /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); };
+		CF0E7EE12920CA355A866327 /* Sources */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -60,6 +70,15 @@
 				6D6D6D6D0000000000000001 /* Crypto in Frameworks */,
 				424653534C00000000000001 /* OpenSSL in Frameworks */,
 				5641504F520000000000001 /* Vapor in Frameworks */,
+				AD5E00000000000000000004 /* IDeviceSwift in Frameworks */,
+				AD5E00000000000000000005 /* IDevice in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AD5E00000000000000000020 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,11 +90,11 @@
 			children = (
 				CF0E7EE12920CA355A866327 /* Sources */,
 				7682B969F8DF974AA9306D80 /* Assets.xcassets */,
-				A1C0FFEE0000000000000002 /* SideInstallerFFI.xcframework */,
 				93A01B663D5573D864F29811 /* Info.plist */,
 				115CB1AE83B2B9BBFB0A9A95 /* unzip-drop.entitlements */,
 				CFC214850958184838F815CE /* Products */,
 				8C7D82082434432C835A5512 /* AVX512ObjcInternal.m */,
+				AD5E00000000000000000014 /* AirShareDeviceTunnel */,
 			);
 			sourceTree = "<group>";
 		};
@@ -83,8 +102,20 @@
 			isa = PBXGroup;
 			children = (
 				2456595988ACDF120DEEB9B4 /* unzip-drop.app */,
+				AD5E0000000000000000000E /* AirShareDeviceTunnel.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		AD5E00000000000000000014 /* AirShareDeviceTunnel */ = {
+			isa = PBXGroup;
+			children = (
+				AD5E0000000000000000000A /* PacketTunnelProvider.swift */,
+				AD5E0000000000000000000B /* LocalPacketReflection.swift */,
+				AD5E0000000000000000000C /* Info.plist */,
+				AD5E0000000000000000000D /* AirShareDeviceTunnel.entitlements */,
+			);
+			path = AirShareDeviceTunnel;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -97,10 +128,12 @@
 				80B8082384B03447C4A9B123 /* Sources */,
 				ED251AC3D36756F87F68B295 /* Frameworks */,
 				F5CEC085741EEB2AA35E8EF3 /* Resources */,
+				AD5E00000000000000000021 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				AD5E00000000000000000029 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				CF0E7EE12920CA355A866327 /* Sources */,
@@ -111,12 +144,38 @@
 				6D6D6D6D0000000000000002 /* Crypto */,
 				50524F4453534C0000000001 /* OpenSSL */,
 				5641504F52500000000001 /* Vapor */,
+				AD5E0000000000000000003D /* IDeviceSwift */,
+				AD5E0000000000000000003E /* IDevice */,
 			);
 			productName = "unzip-drop";
 			productReference = 2456595988ACDF120DEEB9B4 /* unzip-drop.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AD5E0000000000000000001E /* AirShareDeviceTunnel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AD5E00000000000000000032 /* Build configuration list for PBXNativeTarget "AirShareDeviceTunnel" */;
+			buildPhases = (
+				AD5E0000000000000000001F /* Sources */,
+				AD5E00000000000000000020 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AirShareDeviceTunnel;
+			productName = AirShareDeviceTunnel;
+			productReference = AD5E0000000000000000000E /* AirShareDeviceTunnel.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
+
+/* Begin PBXTargetDependency section */
+		AD5E00000000000000000029 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AD5E0000000000000000001E /* AirShareDeviceTunnel */;
+			targetProxy = AD5E00000000000000000028 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXProject section */
 		D7C5B6E417CC3AE86EBD1F76 /* Project object */ = {
@@ -127,6 +186,9 @@
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
 					7161E63E34B4EFFA56B6844D = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					AD5E0000000000000000001E = {
 						CreatedOnToolsVersion = 26.0;
 					};
 				};
@@ -145,6 +207,7 @@
 				6D6D6D6D0000000000000003 /* XCRemoteSwiftPackageReference "swift-crypto" */,
 				504B4753534C000000000001 /* XCRemoteSwiftPackageReference "OpenSSL-Swift-Package" */,
 				5641504F52504B4700000001 /* XCRemoteSwiftPackageReference "vapor" */,
+				AD5E0000000000000000003C /* XCLocalSwiftPackageReference "IDeviceKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = CFC214850958184838F815CE /* Products */;
@@ -152,6 +215,7 @@
 			projectRoot = "";
 			targets = (
 				7161E63E34B4EFFA56B6844D /* unzip-drop */,
+				AD5E0000000000000000001E /* AirShareDeviceTunnel */,
 			);
 		};
 /* End PBXProject section */
@@ -168,6 +232,15 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		AD5E0000000000000000001F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AD5E00000000000000000001 /* PacketTunnelProvider.swift in Sources */,
+				AD5E00000000000000000002 /* LocalPacketReflection.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 
 		80B8082384B03447C4A9B123 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -340,6 +413,64 @@
 			name = Release;
 		};
 
+		AD5E00000000000000000033 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = AirShareDeviceTunnel/AirShareDeviceTunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AirShareDeviceTunnel/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "AirShare Local Installation";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mrzefv.unzipdrop.DeviceTunnel;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AD5E00000000000000000034 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = AirShareDeviceTunnel/AirShareDeviceTunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AirShareDeviceTunnel/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "AirShare Local Installation";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mrzefv.unzipdrop.DeviceTunnel;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -361,8 +492,24 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		AD5E00000000000000000032 /* Build configuration list for PBXNativeTarget "AirShareDeviceTunnel" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AD5E00000000000000000033 /* Debug */,
+				AD5E00000000000000000034 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		AD5E0000000000000000003C /* XCLocalSwiftPackageReference "IDeviceKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = IDeviceKit;
+		};
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
 		61EDEC30A5F63ED366D136AF /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
@@ -419,6 +566,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 6D6D6D6D0000000000000003 /* XCRemoteSwiftPackageReference "swift-crypto" */;
 			productName = Crypto;
+		};
+		AD5E0000000000000000003D /* IDeviceSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AD5E0000000000000000003C /* XCLocalSwiftPackageReference "IDeviceKit" */;
+			productName = IDeviceSwift;
+		};
+		AD5E0000000000000000003E /* IDevice */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AD5E0000000000000000003C /* XCLocalSwiftPackageReference "IDeviceKit" */;
+			productName = IDevice;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

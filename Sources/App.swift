@@ -10,6 +10,12 @@ struct UnzipDropApp: App {
     @StateObject private var session = Session()
     @StateObject private var config = Config()
     @StateObject private var notifications = NotificationManager.shared
+    @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        // Must register before launch finishes (pairing keeps running via a continued-processing task).
+        DevicePairingService.registerBackgroundTask()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -18,6 +24,10 @@ struct UnzipDropApp: App {
                 .environmentObject(session)
                 .environmentObject(config)
                 .onOpenURL { url in session.receiveIncoming(url) }
+                .overlay(alignment: .top) { NativeInstallBanner() }
+                .onChange(of: scenePhase) { phase in
+                    if phase == .active { Task { await VPNReconnectCoordinator.shared.appBecameActive() } }
+                }
         }
         .backgroundTask(.appRefresh("com.mrzefv.airshare.source-scan")) {
             await LocalSourceUpdateWatcher.shared.scanAllSources(reason: "background")

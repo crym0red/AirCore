@@ -76,6 +76,20 @@ while IFS= read -r f; do
   [ "$o" -eq "$c" ] || echo "    WARN brace mismatch in $f ({ $o vs } $c)"
 done < <(find Sources -name '*.swift')
 
+# Native device installer: fetch the pinned IDeviceKit, apply the overlays and build the
+# idevice XCFramework (needs rustup; macos runner has it). Skip with SKIP_NATIVE=1 only if
+# you also remove the IDeviceKit package + AirShareDeviceTunnel target from the project.
+if [ "${SKIP_NATIVE:-0}" != "1" ]; then
+  echo ""; hr; echo "==> Native device library"; hr
+  TOOLCHAIN="$(python3 -c 'import json;print(json.load(open("Native/Device/source.json"))["rust_toolchain"])')"
+  if command -v rustup >/dev/null 2>&1; then
+    run rustup toolchain install "$TOOLCHAIN" --profile minimal
+  fi
+  run python3 .github/scripts/fetch_devicekit.py
+  run python3 .github/scripts/integrate_devicekit.py
+  run python3 .github/scripts/build_device_native.py
+fi
+
 echo ""; echo "==> Schemes"
 run_soft xcodebuild -list -project "$PROJECT"
 
@@ -107,9 +121,29 @@ echo ""; echo "==> Built: $APP_PATH"
 # Package: Payload/<App>.app → .ipa (no exportArchive — that needs a signing identity).
 rm -rf "$OUT"; mkdir -p "$OUT/Payload"
 cp -R "$APP_PATH" "$OUT/Payload/"
+# Re-signers (zsign) need write access to every Mach-O (Xcode ships some mode 0555).
+chmod -R u+rwX "$OUT/Payload"
 # Strip anything that can't ship unsigned / isn't needed for sideloading.
 find "$OUT/Payload" -name "_CodeSignature" -type d -prune -exec rm -rf {} + 2>/dev/null || true
 find "$OUT/Payload" -name "embedded.mobileprovision" -delete 2>/dev/null || true
+# The native installer's VPN needs packet-tunnel-provider on BOTH the app and the appex.
+# An unsigned binary carries no entitlements, so (unless ADHOC_ENTITLEMENTS=0) ad-hoc sign
+# inside-out with the entitlement files so re-signers can see and preserve the request.
+# This is not a valid distribution signature — the IPA still has to be re-signed.
+APPEX="$(ls -d "$OUT"/Payload/*.app/PlugIns/AirShareDeviceTunnel.appex 2>/dev/null | head -n1)"
+if [ -n "$APPEX" ]; then
+  echo "==> Embedded tunnel extension: $APPEX"
+  if [ "${ADHOC_ENTITLEMENTS:-1}" = "1" ]; then
+    APPDIR="$(ls -d "$OUT"/Payload/*.app | head -n1)"
+    while IFS= read -r b; do
+      codesign --force --sign - --timestamp=none "$b" 2>&1 | tee -a "$LOG" || true
+    done < <(find "$APPDIR" -depth \( -name '*.framework' -o -name '*.dylib' \) -not -path "$APPEX/*" 2>/dev/null)
+    codesign --force --sign - --timestamp=none --entitlements "$ROOT/AirShareDeviceTunnel/AirShareDeviceTunnel.entitlements" "$APPEX" 2>&1 | tee -a "$LOG" || true
+    codesign --force --sign - --timestamp=none --entitlements "$ROOT/unzip-drop.entitlements" "$APPDIR" 2>&1 | tee -a "$LOG" || true
+  fi
+else
+  echo "WARN: AirShareDeviceTunnel.appex is not embedded — native install will report 'no VPN extension'."
+fi
 ( cd "$OUT" && zip -qry "$APP_NAME.ipa" Payload && rm -rf Payload )
 
 # Sanity: the IPA unzips and has an Info.plist.
