@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import IDevice
 import UIKit
+import UserNotifications
 
 // Native callbacks only hold this context until the blocking run returns.
 private nonisolated final class PairingOperation: @unchecked Sendable {
@@ -79,6 +80,7 @@ final class DevicePairingService: NSObject, ObservableObject, NetServiceDelegate
         isRunning = true
         pin = nil
         advertisementError = nil
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         beginBackgroundTime()
         var succeeded = false
         defer {
@@ -125,6 +127,13 @@ final class DevicePairingService: NSObject, ObservableObject, NetServiceDelegate
             } catch { advertisementError = error; cancel() }
         } else if event == 1 {
             pin = text
+            let content = UNMutableNotificationContent()
+            content.title = "AirShare pairing code"
+            content.body = "Enter \(text) in Settings to finish pairing."
+            content.sound = .default
+            content.interruptionLevel = .timeSensitive
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "airshare.pairing.pin", content: content,
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)))
 #if compiler(>=6.2)
             if #available(iOS 26.0, *), let task = continuedTask as? BGContinuedProcessingTask {
                 task.progress.completedUnitCount = 1
