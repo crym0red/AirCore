@@ -233,3 +233,12 @@ struct InstallMethodPicker: View {
         }
     }
 }
+
+/// Hides OTA-only UI (domain / TLS cert tiles) while Native install is selected.
+struct HiddenWhenNative<Content: View>: View {
+    @AppStorage(NativeInstaller.methodKey) private var method: String = "ota"
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        if method != "native" { content() }
+    }
+}
