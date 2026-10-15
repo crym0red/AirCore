@@ -1,8 +1,11 @@
 //
 //  OTAInstaller.swift
 //  Serves a locally-signed IPA over the on-device Vapor HTTPS server and hands
-//  iOS the itms-services URL. Keeps the server alive under a background task
-//  for the ~90s installd needs.
+//  iOS the itms-services URL directly. That URL is handled entirely by the
+//  system — it shows Apple's own native "<host> would like to install <app>"
+//  alert right on top of AirShare, with no app-switch and no Safari UI ever
+//  visible, as long as the TLS/DNS preconditions below are actually met.
+//  Keeps the server alive under a background task for the ~90s installd needs.
 //
 //  Cert source follows ServerConfig.certMode:
 //    "public" → the ACME (airshare.lol-style) cert, refreshed from the certs repo.
@@ -42,9 +45,12 @@ final class OTAInstaller: ObservableObject {
         case noLocalLeaf(host: String)
         case hostNotLoopback(host: String)
         case rootNotTrusted
+        case trollStoreNotInstalled
 
         var errorDescription: String? {
             switch self {
+            case .trollStoreNotInstalled:
+                return "TrollStore isn't installed on this device (or it's hidden under a disguised icon iOS doesn't recognize by its usual name)."
             case .rootNotTrusted:
                 return "Your local root CA isn't trusted on this device yet, so Safari would reject the install silently. Settings › AirShare › Local CA: Install trust profile, then enable it in Settings › General › About › Certificate Trust Settings."
             case .hostNotCovered(let h, let mode, let sans):
@@ -69,22 +75,16 @@ final class OTAInstaller: ObservableObject {
         try await install(ipaURL: app.ipaURL, bundleID: app.bundleID, name: app.name, version: app.version, iconData: icon)
     }
 
-    func install(ipaURL: URL, bundleID: String, name: String, version: String, iconData: Data?) async throws {
-        guard FileManager.default.fileExists(atPath: ipaURL.path) else { throw InstallError.ipaMissing }
-
-        // Settings › Install Method › Native: skip the itms-services/OTA path and
-        // install straight over the built-in local VPN + device pairing.
-        if NativeInstaller.isSelected {
-            try await NativeInstaller.shared.install(ipaURL: ipaURL, bundleID: bundleID, name: name, version: version)
-            return
-        }
-
+    /// Every TLS/DNS precondition an on-device HTTPS fetch (manifest+IPA for a
+    /// normal OTA install, or just the IPA for a TrollStore handoff) depends on.
+    /// Shared by both install paths so they fail with the same explainable
+    /// errors instead of silently hanging — iOS reports neither the loopback-DNS
+    /// nor the host-not-covered case as an error of its own, it just never shows
+    /// a prompt (or, for TrollStore, the fetch just times out).
+    private func validateServerPreconditions() async throws {
         let host = ServerConfig.installHost
         let mode = ServerConfig.certMode
 
-        // Loopback DNS is required in BOTH modes — iOS shows no error, it just
-        // silently drops the install prompt if the host can't be resolved to
-        // 127.0.0.1. Check it up front so the failure is at least explainable.
         if let loop = await ZefvCert.resolvesToLoopback(host), loop == false {
             throw InstallError.hostNotLoopback(host: host)
         }
@@ -112,6 +112,11 @@ final class OTAInstaller: ObservableObject {
                 throw InstallError.hostNotCovered(host: host, mode: mode, sans: sans)
             }
         }
+    }
+
+    func install(ipaURL: URL, bundleID: String, name: String, version: String, iconData: Data?) async throws {
+        guard FileManager.default.fileExists(atPath: ipaURL.path) else { throw InstallError.ipaMissing }
+        try await validateServerPreconditions()
 
         let icon57  = Self.squarePNG(iconData, side: 57)
         let icon512 = Self.squarePNG(iconData, side: 512)
@@ -127,6 +132,16 @@ final class OTAInstaller: ObservableObject {
         }
 
         lastReport = nil; tracing = true
+        // Straight to itms-services — this is what actually produces Apple's own
+        // native install alert directly over AirShare (no Safari, no app-switch),
+        // same as every other sideloading tool on iOS. The earlier "route it
+        // through Safari first" detour traded that native alert for a full
+        // Safari takeover, which isn't what should happen on a device where the
+        // preconditions above are actually satisfied — so back to the direct
+        // open. When the prompt doesn't appear, it's almost always one of the
+        // explainable failures validateServerPreconditions() already guards
+        // against (TLS/host mismatch, DNS not pointing at loopback, untrusted
+        // local root), not something a different launch mechanism fixes.
         let opened = await UIApplication.shared.open(server.itmsServicesURL)
         guard opened else { tearDown(); tracing = false; throw InstallError.openFailed }
         ZefvVPS.report(bundle: bundleID, version: version, name: name, stage: "prompted")
@@ -144,6 +159,64 @@ final class OTAInstaller: ObservableObject {
             self.tracing = false
             if t.ipaFetched { ZefvVPS.report(bundle: bundleID, version: version, name: name, stage: "installed") }
         }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 90 * 1_000_000_000)
+            if let self, self.current === server { self.tearDown() }
+        }
+    }
+
+    // MARK: - TrollStore handoff
+
+    /// Whether TrollStore is actually installed on this device, detected via its
+    /// own documented inter-app install scheme (`apple-magnifier://`). TrollStore
+    /// keeps this scheme registered under every one of its disguised icons/names,
+    /// so this works regardless of what it's hidden as. Requires the scheme to be
+    /// declared in LSApplicationQueriesSchemes (Info.plist) or -canOpenURL: always
+    /// reports false.
+    static var trollStoreAvailable: Bool {
+        guard let url = URL(string: "apple-magnifier://") else { return false }
+        return UIApplication.shared.canOpenURL(url)
+    }
+
+    func installWithTrollStore(_ app: SignedEntry) async throws {
+        try await installWithTrollStore(ipaURL: app.ipaURL, bundleID: app.bundleID, name: app.name, version: app.version)
+    }
+
+    /// Skips itms-services and the manifest entirely — TrollStore wants only a
+    /// direct, reachable URL to the raw .ipa (same on-device HTTPS server, same
+    /// `/ota/<id>/app.ipa` route a normal install already serves) and re-signs
+    /// and installs it itself via its own CoreTrust-bypass persistence, so none
+    /// of this device's own signing/provisioning limits (UDID list, 3-app cap,
+    /// 7-day free-account expiry) apply to an app installed this way.
+    func installWithTrollStore(ipaURL: URL, bundleID: String, name: String, version: String) async throws {
+        guard FileManager.default.fileExists(atPath: ipaURL.path) else { throw InstallError.ipaMissing }
+        guard Self.trollStoreAvailable else { throw InstallError.trollStoreNotInstalled }
+        try await validateServerPreconditions()
+
+        tearDown()
+        let server = try LocalOTAServer(package: ipaURL,
+                                        metadata: InstallAppData(id: bundleID, version: version, name: name),
+                                        imageSmall: Data(), imageLarge: Data())
+        current = server
+
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "trollstore-install") { [weak self] in
+            self?.tearDown()
+        }
+
+        let ipaURLString = "https://\(LocalOTAServer.host()):\(LocalZSignAPI.shared.port)/ota/\(server.id.uuidString)/app.ipa"
+        guard var comps = URLComponents(string: "apple-magnifier://install") else { tearDown(); throw InstallError.openFailed }
+        comps.queryItems = [URLQueryItem(name: "url", value: ipaURLString)]
+        guard let trollURL = comps.url else { tearDown(); throw InstallError.openFailed }
+
+        let opened = await UIApplication.shared.open(trollURL)
+        guard opened else { tearDown(); throw InstallError.openFailed }
+        ZefvVPS.report(bundle: bundleID, version: version, name: name, stage: "prompted")
+
+        // TrollStore takes over entirely from here — it downloads the IPA itself
+        // and installs it with no system "Install" prompt and nothing more for
+        // this app to poll for, so there's no 25s diagnosis report to build (that
+        // report is built from itms-services/installd traffic, which TrollStore
+        // never generates). Just keep the IPA reachable long enough for it to fetch.
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 90 * 1_000_000_000)
             if let self, self.current === server { self.tearDown() }
