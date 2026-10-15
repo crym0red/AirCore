@@ -43,7 +43,9 @@ jobs:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
 
       - name: Build SideInstaller native FFI XCFramework
-        run: ./scripts/build-sideinstaller-native.sh
+        working-directory: ${{ env.ROOT }}
+        shell: bash
+        run: bash ./scripts/build-sideinstaller-native.sh
 
       - name: Upload native framework build artifact
         uses: actions/upload-artifact@v4
