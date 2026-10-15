@@ -51,12 +51,15 @@ final class DevicePairingService: NSObject, ObservableObject, NetServiceDelegate
     private static var taskID: String { (Bundle.main.bundleIdentifier ?? "AirShare") + ".userTask.pairing" }
 
     static func registerBackgroundTask() {
+#if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             BGTaskScheduler.shared.register(forTaskWithIdentifier: taskID, using: .main) { task in
                 guard let task = task as? BGContinuedProcessingTask else { return }
                 Task { @MainActor in Self.shared.acceptBackgroundTask(task) }
             }
         }
+
+#endif
     }
 
     func pair() async throws -> DevicePairingRecord {
@@ -122,10 +125,13 @@ final class DevicePairingService: NSObject, ObservableObject, NetServiceDelegate
             } catch { advertisementError = error; cancel() }
         } else if event == 1 {
             pin = text
+#if compiler(>=6.2)
             if #available(iOS 26.0, *), let task = continuedTask as? BGContinuedProcessingTask {
                 task.progress.completedUnitCount = 1
                 task.updateTitle("Pair with AirShare", subtitle: "Enter code \(text) in Settings")
             }
+
+#endif
         }
     }
 
@@ -138,14 +144,18 @@ final class DevicePairingService: NSObject, ObservableObject, NetServiceDelegate
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Device pairing") { [weak self] in
             Task { @MainActor in self?.cancel() }
         }
+#if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             let request = BGContinuedProcessingTaskRequest(identifier: Self.taskID,
                 title: "Pair with AirShare", subtitle: "Open Developer Mode in Settings")
             request.strategy = .fail
             try? BGTaskScheduler.shared.submit(request)
         }
+
+#endif
     }
 
+#if compiler(>=6.2)
     @available(iOS 26.0, *)
     private func acceptBackgroundTask(_ task: BGContinuedProcessingTask) {
         guard isRunning else { task.setTaskCompleted(success: false); return }
@@ -160,7 +170,9 @@ final class DevicePairingService: NSObject, ObservableObject, NetServiceDelegate
         }
     }
 
+#endif
     private func endBackgroundTime(success: Bool) {
+#if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.taskID)
             if let task = continuedTask as? BGContinuedProcessingTask {
@@ -168,6 +180,8 @@ final class DevicePairingService: NSObject, ObservableObject, NetServiceDelegate
                 task.setTaskCompleted(success: success)
             }
         }
+
+#endif
         continuedTask = nil
         if backgroundTask != .invalid {
             UIApplication.shared.endBackgroundTask(backgroundTask)
