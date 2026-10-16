@@ -41,12 +41,23 @@ struct RootView: View {
         }
         .id(theme.revision)                                   // re-skin every tab on a theme change
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .simultaneousGesture(                                 // finger drives the particle layer (grab / repulse / attract + tap burst)
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                .onChanged { ParticleTouch.point = $0.location }
+                .onEnded { v in
+                    ParticleTouch.point = nil
+                    if abs(v.translation.width) < 8 && abs(v.translation.height) < 8 {
+                        ParticleTouch.pulse = (v.location, Date.timeIntervalSinceReferenceDate)
+                    }
+                }
+        )
         .overlay(ThemeBackgroundLayer())                      // particle/grid network floats over the tab content
         .overlay { dropdownLayer }                            // palette + account dropdowns
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: theme.panelShown)
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: account.panelShown)
 
         .task {
+            theme.startCycleIfNeeded()
             Task { _ = await LibraryCache.shared.refresh() }   // Library is ready before you open it
             await SourceStore.shared.warmUpAtLaunch()
             WidgetDataManager.shared.refresh()
@@ -189,6 +200,7 @@ extension View {
 // MARK: - Tab bar
 
 private struct TabBar: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @Binding var selected: Int
     private let tabs: [(label: String, icon: String)] = [
         ("Browse",   "square.grid.3x3.fill"),
@@ -235,6 +247,7 @@ final class GitHubHub: ObservableObject {
 }
 
 struct GitHubHubScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @ObservedObject private var hub = GitHubHub.shared
     @EnvironmentObject var session: Session
     @Environment(\.dismiss) private var dismiss

@@ -283,6 +283,7 @@ private struct SettingsSection<Content: View>: View {
 private let rowHeight: CGFloat = 64
 
 private struct RowBody: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let icon: String
     var imageName: String? = nil
     var imageURL: URL? = nil
@@ -369,6 +370,7 @@ private struct SettingsLink: View {
 }
 
 private struct SourceUpdateControls: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @ObservedObject private var watcher = LocalSourceUpdateWatcher.shared
     @ObservedObject private var certs = CertificateStore.shared
 
@@ -421,6 +423,7 @@ private struct RowPressStyle: ButtonStyle {
 // MARK: - Footer (AirShare-style identity + status pill)
 
 private struct StatusFooter: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @EnvironmentObject var config: Config
     @ObservedObject private var staff = StaffGate.shared
     @ObservedObject private var account = ZefvAccount.shared
@@ -632,6 +635,7 @@ private func statusLine(_ name: String, _ ok: Bool) -> some View {
 }
 
 private struct AboutScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @Environment(\.openURL) private var openURL
 
     private var version: String {
@@ -733,6 +737,7 @@ private struct AboutScreen: View {
 // MARK: - Repository
 
 private struct RepoScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @EnvironmentObject var config: Config
     @State private var checking = false
     @State private var result: String?
@@ -802,6 +807,7 @@ private struct RepoScreen: View {
 // MARK: - Token
 
 private struct TokenScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @EnvironmentObject var config: Config
     @State private var show = false
 
@@ -850,6 +856,7 @@ private struct TokenScreen: View {
 // MARK: - Templates
 
 private struct DylibTemplateScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @EnvironmentObject var session: Session
     @Environment(\.dismiss) private var dismiss
     @State private var name = "MRvEKTweak"
@@ -900,6 +907,7 @@ private struct DylibTemplateScreen: View {
 }
 
 private struct IPATemplateScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @EnvironmentObject var session: Session
     @Environment(\.dismiss) private var dismiss
     @State private var name = "MRvEKApp"
@@ -950,6 +958,7 @@ private struct IPATemplateScreen: View {
 /// Inset-grouped table screen with the app's dark chrome. Root screens get a
 /// chevron-down dismiss; pushed screens get the system back button.
 private struct TableScreen<Content: View>: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let title: String
     var root = false
     @ViewBuilder var content: Content
@@ -1117,6 +1126,7 @@ private final class OTAState: ObservableObject {
 // MARK: - AirShare (root table)
 
 struct OTADomainScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @EnvironmentObject var config: Config
     @StateObject private var st = OTAState()
 
@@ -1366,6 +1376,7 @@ private struct OwnCertScreen: View {
 // MARK: - Exported files
 
 private struct OTAFilesScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @ObservedObject var st: OTAState
     @Environment(\.openURL) private var openURL
     @State private var share: URLItem?
@@ -1420,6 +1431,7 @@ private struct OTAFilesScreen: View {
 // MARK: - Local CA
 
 private struct LocalCAScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @ObservedObject var st: OTAState
     @State private var host = ServerConfig.installHost
     @State private var working = false
@@ -1559,6 +1571,7 @@ private struct ProfileInspector: View {
 // MARK: - Certificate inspector (public vs local, same fields)
 
 private struct CertInspectorScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @State private var publicChain: [CertFacts] = []
     @State private var localLeaf: [CertFacts] = []
     @State private var localRoot: [CertFacts] = []
@@ -1633,6 +1646,7 @@ private struct CertInspectorScreen: View {
 // MARK: - What leaves this device
 
 private struct TransparencyScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @State private var checks: [TransparencyReport.Check] = []
     @State private var running = false
 
@@ -1712,6 +1726,7 @@ private struct TransparencyScreen: View {
 // MARK: - Install method (OTA vs native device install)
 
 private struct NativeInstallScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @AppStorage(NativeInstaller.methodKey) private var method = "ota"
     @ObservedObject private var manager = DeviceInstallationManager.shared
     @ObservedObject private var pairing = DevicePairingService.shared

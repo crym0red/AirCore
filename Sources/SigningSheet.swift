@@ -1428,6 +1428,7 @@ struct BundleInfoEditorSheet: View {
 }
 
 struct DeveloperToolSheet: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     enum Mode { case strings, patchFunctions, dependencies, disassemble, analysis, injectData, cfgViewer }
 
     let mode: Mode
@@ -4462,6 +4463,7 @@ private struct CFGViewerController: UIViewControllerRepresentable {
 /// that lazily triggers the real scan for this node's own children the first
 /// time it's opened, so nothing past the root is computed until asked for.
 private struct CallGraphTree: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @ObservedObject var node: DeveloperToolSheet.CallGraphNode
     let direction: DeveloperToolSheet.CallGraphDirection
     let blue: Color
@@ -4819,6 +4821,7 @@ private struct KeyValueEditorList: View {
 // MARK: - Turbo local bulk signer
 
 private struct TurboBulkSigningView: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let defaultOptions: SignOptions
     @Environment(\.dismiss) private var dismiss
     @State private var showPicker = false
@@ -5015,6 +5018,7 @@ struct DocPicker: UIViewControllerRepresentable {
 // MARK: - Signing terminal (AirShare-style full-screen zsign log)
 
 struct SigningTerminalView: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let appName: String
     let bundle: String
     let icon: Data?
@@ -5224,6 +5228,7 @@ extension UIActivityViewController {
 // MARK: - Install prompt (AirShare-style pre-install detail card)
 
 struct InstallPromptOverlay: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let name: String
     let bundle: String
     let version: String
@@ -5403,6 +5408,7 @@ struct InstallPromptOverlay: View {
 /// Native install status, drawn like an app installing on the Home Screen:
 /// dimmed icon with a progress ring, app name, a progress bar, then "Sent to Home Screen".
 struct NativeInstallTile: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let entry: SignedEntry
     @ObservedObject private var installer = NativeInstaller.shared
 
@@ -5499,6 +5505,7 @@ struct NativeInstallTile: View {
 }
 
 struct SentToHomeOverlay: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let name: String
     let icon: Data?
     let host: String

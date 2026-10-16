@@ -7,6 +7,7 @@ import SwiftUI
 import UIKit
 
 struct SignedView: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     @ObservedObject private var signed = SignedStore.shared
     @ObservedObject private var ota = OTAInstaller.shared
     @State private var installing: String?
@@ -108,23 +109,26 @@ struct SignedView: View {
     }
 
     private func row(_ e: SignedEntry) -> some View {
-        AirShareAppRow(
-            iconURL: e.iconURL,
-            title: e.name,
-            subtitle: "\(e.version) • \(e.bundleID)",
-            pill: signedBadge(e),
-            busy: installing == e.id,
-            accent: SSTheme.tintColor,
-            onTap: {
-                if selecting { toggle(e) } else { sheetEntry = e }
-            }
-        )
-        .overlay(alignment: .trailing) {
+        HStack(spacing: 12) {
             if selecting {
                 Image(systemName: selected.contains(e.id) ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 24)).foregroundStyle(selected.contains(e.id) ? SSTheme.tintColor : Theme.subtle)
-                    .padding(.trailing, 2).allowsHitTesting(false)
+                    .font(.system(size: 26)).foregroundStyle(selected.contains(e.id) ? SSTheme.tintColor : Theme.subtle)
+                    .frame(width: 30)
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggle(e) }
+                    .transition(.move(edge: .leading).combined(with: .opacity))
             }
+            AirShareAppRow(
+                iconURL: e.iconURL,
+                title: e.name,
+                subtitle: "\(e.version) • \(e.bundleID)",
+                pill: signedBadge(e),
+                busy: installing == e.id,
+                accent: SSTheme.tintColor,
+                onTap: {
+                    if selecting { toggle(e) } else { sheetEntry = e }
+                }
+            )
         }
     }
 
@@ -178,6 +182,7 @@ struct SignedView: View {
 // MARK: - Bottom action sheet (AirShare-style: icon + bundle header, rows, footer)
 
 struct AppActionSheet: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     struct Action: Identifiable {
         enum Role { case normal, destructive }
         let id = UUID()

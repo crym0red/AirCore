@@ -673,6 +673,7 @@ struct SourcesView: View {
 // MARK: - Source detail (the app list)
 
 private struct SourceDetailScreen: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let source: RepoSource
     @ObservedObject private var store = SourceStore.shared
     @ObservedObject private var appStats = AppStatsStore.shared
@@ -1053,6 +1054,7 @@ private struct SourceDetailScreen: View {
 // MARK: - Icon
 
 struct SourceIcon: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let url: URL?
     let side: CGFloat
     var fallback: String = ""
@@ -1090,6 +1092,7 @@ nonisolated enum IPAInbox {
 // MARK: - App detail sheet (AirShare layout)
 
 struct AppDetailSheet: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let source: RepoSource
     let group: AppGroup
     @ObservedObject private var appStats = AppStatsStore.shared

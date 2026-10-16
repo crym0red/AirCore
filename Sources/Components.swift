@@ -66,6 +66,7 @@ struct TabTitleBar<Trailing: View>: View {
 /// Tall row: 60pt icon · bold title · monospace version·bundle · status pill · ↗ action.
 /// Edge-to-edge with a hairline divider — no bordered card.
 struct AirShareRow: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let icon: Data?
     let title: String
     let subtitle: String        // "1.0 • com.mrzefv.unzipdrop"
@@ -128,6 +129,7 @@ func airshareRelative(_ date: Date) -> String {
 }
 
 struct AirShareIcon: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let data: Data?
     var body: some View {
         Group {
@@ -142,6 +144,7 @@ struct AirShareIcon: View {
 /// 13pt "version • bundle" · capsule origin/status pill · arrow.up.right.
 /// Renders on the app's black background with a hairline divider between rows.
 struct AirShareAppRow: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     let iconURL: URL?
     let title: String
     let subtitle: String        // "1.0 • com.mrzefv.unzipdrop"
@@ -191,6 +194,7 @@ struct AirShareSearchField: View {
 }
 
 struct TopBar: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read the accent live (auto-cycle) without rebuilding
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "archivebox.fill").foregroundStyle(Theme.accent)
