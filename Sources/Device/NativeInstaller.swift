@@ -9,11 +9,19 @@ import Combine
 import Foundation
 import IDeviceSwift
 import SwiftUI
+import ZIPFoundation
 
 @MainActor
 final class NativeInstaller: ObservableObject {
     static let shared = NativeInstaller()
     static let methodKey = "AirShare.installMethod"   // "ota" (default) | "native"
+
+    /// Original (compressed) IPA each signed IPA was made from, so the upload can reuse its compressed bytes.
+    /// Set by whoever signs, keyed by the signed IPA's path. In memory only.
+    private static var originals: [String: URL] = [:]
+    static func registerOriginal(_ original: URL, forSigned signed: URL) { originals[signed.path] = original }
+    /// A re-signed copy keeps the same unsigned original for the fast repack.
+    static func carryOriginal(from old: URL, to new: URL) { if let o = originals[old.path] { originals[new.path] = o } }
 
     static var isSelected: Bool {
         UserDefaults.standard.string(forKey: methodKey) == "native"
@@ -25,11 +33,12 @@ final class NativeInstaller: ObservableObject {
         let bundleID: String
     }
 
-    enum Stage: Equatable {
-        case idle, connecting, uploading, installing, done, failed(String)
+    enum Stage: Equatable, Hashable {
+        case idle, packing, connecting, uploading, installing, done, failed(String)
         var label: String {
             switch self {
             case .idle: return ""
+            case .packing: return "Compressing for a faster upload…"
             case .connecting: return "Connecting to this device…"
             case .uploading: return "Sending IPA…"
             case .installing: return "Installing…"
@@ -61,22 +70,19 @@ final class NativeInstaller: ObservableObject {
     }
 
     private func finishTimings() {
-        guard let first = marks.first else { return }
         let end = Date()
-        let at: (Stage) -> Date? = { st in self.marks.first(where: { $0.stage == st })?.at }
-        var edges: [(String, Date)] = [("Connect", first.at)]
-        if let u = at(.uploading) { edges.append(("Upload", u)) }
-        if let i = at(.installing) { edges.append(("Install", i)) }
+        let labels: [Stage: String] = [.packing: "Pack", .connecting: "Connect", .uploading: "Upload", .installing: "Install"]
+        let ordered = marks.compactMap { m in labels[m.stage].map { (label: $0, at: m.at) } }
         var out: [(label: String, seconds: Double)] = []
-        for (idx, e) in edges.enumerated() {
-            let next = idx + 1 < edges.count ? edges[idx + 1].1 : end
-            out.append((e.0, max(0, next.timeIntervalSince(e.1))))
+        for (idx, e) in ordered.enumerated() {
+            let next = idx + 1 < ordered.count ? ordered[idx + 1].at : end
+            out.append((e.label, max(0, next.timeIntervalSince(e.at))))
         }
         timings = out
     }
 
     var isActive: Bool {
-        switch stage { case .connecting, .uploading, .installing: return true; default: return false }
+        switch stage { case .packing, .connecting, .uploading, .installing: return true; default: return false }
     }
 
     private var observer: AnyCancellable?
@@ -108,7 +114,7 @@ final class NativeInstaller: ObservableObject {
         job = Job(name: name, bundleID: bundleID)
         timings = []
         marks = []
-        enter(.connecting)
+        enter(.packing)
         progress = 0
 
         observer = viewModel.objectWillChange.sink { [weak self, weak viewModel] _ in
@@ -130,8 +136,19 @@ final class NativeInstaller: ObservableObject {
             observer = nil
             workflowID = nil
         }
+        var packedDir: URL?
+        defer { if let packedDir { try? FileManager.default.removeItem(at: packedDir) } }
         do {
-            try await manager.install(at: ipaURL, viewModel: viewModel,
+            // The signer writes IPAs uncompressed (~2× the size). The device link is the bottleneck,
+            // so compress first when it saves more than it costs.
+            var sendURL = ipaURL
+            if let packed = try await Self.packedCopy(of: ipaURL, original: Self.originals[ipaURL.path]) {
+                sendURL = packed
+                packedDir = packed.deletingLastPathComponent()
+            }
+            try Task.checkCancellation()
+            enter(.connecting)
+            try await manager.install(at: sendURL, viewModel: viewModel,
                                       suspend: bundleID == Bundle.main.bundleIdentifier,
                                       mode: manager.mode, bundleIdentifier: bundleID,
                                       isCurrent: { true })
@@ -148,6 +165,44 @@ final class NativeInstaller: ObservableObject {
             stage = .failed(error.localizedDescription)
             throw error
         }
+    }
+
+    /// Smaller copy of a signed IPA in a temp folder, or nil if it's small / not worth it.
+    /// Fast path: copy the original's compressed bytes for unchanged files (ZipDelta).
+    /// Fallback: unpack and deflate everything.
+    private nonisolated static func packedCopy(of ipa: URL, original: URL?) async throws -> URL? {
+        try await Task.detached(priority: .userInitiated) {
+            let fm = FileManager.default
+            let size = (try? fm.attributesOfItem(atPath: ipa.path)[.size] as? Int64) ?? 0
+            guard size > 30_000_000 else { return nil }
+            if let original, fm.fileExists(atPath: original.path) {
+                let root = fm.temporaryDirectory.appendingPathComponent("native-pack-\(UUID().uuidString)", isDirectory: true)
+                try? fm.createDirectory(at: root, withIntermediateDirectories: true)
+                let out = root.appendingPathComponent("app.ipa")
+                do {
+                    try ZipDelta.repack(signed: ipa, original: original, to: out)
+                    let newSize = (try? fm.attributesOfItem(atPath: out.path)[.size] as? Int64) ?? size
+                    if newSize < size * 9 / 10 { return out }
+                } catch { /* fall through to the full recompress */ }
+                try? fm.removeItem(at: root)
+            }
+            let root = fm.temporaryDirectory.appendingPathComponent("native-pack-\(UUID().uuidString)", isDirectory: true)
+            try fm.createDirectory(at: root, withIntermediateDirectories: true)
+            do {
+                let src = root.appendingPathComponent("src", isDirectory: true)
+                try fm.unzipItem(at: ipa, to: src)
+                let out = root.appendingPathComponent("app.ipa")
+                try fm.zipItem(at: src.appendingPathComponent("Payload", isDirectory: true), to: out,
+                               shouldKeepParent: true, compressionMethod: .deflate)
+                try? fm.removeItem(at: src)
+                let newSize = (try? fm.attributesOfItem(atPath: out.path)[.size] as? Int64) ?? size
+                guard newSize < size * 9 / 10 else { try? fm.removeItem(at: root); return nil }
+                return out
+            } catch {
+                try? fm.removeItem(at: root)
+                return nil   // fall back to sending the original
+            }
+        }.value
     }
 
     func dismiss() {
@@ -185,9 +240,9 @@ struct NativeInstallBanner: View {
         }
         .padding(.top, 6)
         .animation(.easeInOut(duration: 0.2), value: installer.stage)
-        .task { SelfUpdater.shared.autoCheckIfDue(); AppAutoUpdater.shared.autoCheckIfDue() }
+        .task { AppAutoUpdater.shared.autoCheckIfDue() }
         .onChange(of: scenePhase) { phase in
-            if phase == .active { SelfUpdater.shared.autoCheckIfDue(); AppAutoUpdater.shared.autoCheckIfDue() }
+            if phase == .active { AppAutoUpdater.shared.autoCheckIfDue() }
         }
     }
 
@@ -230,51 +285,6 @@ struct NativeInstallBanner: View {
         case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
         default: Image(systemName: "arrow.down.app.fill")
-        }
-    }
-}
-
-// MARK: - Install method picker (signing sheet)
-
-/// Drop-down shown in the signing sheet. Same setting as Settings › Install Method.
-struct InstallMethodPicker: View {
-    @AppStorage(NativeInstaller.methodKey) private var method: String = "ota"
-    private let accent = Color(red: 1.0, green: 0.6, blue: 0.1)
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("INSTALL METHOD").font(.system(size: 11, weight: .heavy)).kerning(2.2).foregroundStyle(.secondary)
-            HStack(spacing: 12) {
-                Image(systemName: method == "native" ? "point.3.connected.trianglepath.dotted" : "globe")
-                    .font(.system(size: 18, weight: .bold)).foregroundStyle(accent)
-                    .frame(width: 40, height: 40)
-                    .background(accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(method == "native" ? "Native · built-in VPN" : "OTA · itms-services")
-                        .font(.system(size: 16, weight: .semibold))
-                    Text(method == "native" ? "Installs straight to this device. No domain or TLS cert."
-                                            : "Installs through your AirShare domain and cert.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
-                }
-                Spacer(minLength: 0)
-                Menu {
-                    Button { method = "ota" } label: {
-                        Label("OTA · itms-services", systemImage: method == "ota" ? "checkmark" : "globe")
-                    }
-                    Button { method = "native" } label: {
-                        Label("Native · built-in VPN", systemImage: method == "native" ? "checkmark" : "point.3.connected.trianglepath.dotted")
-                    }
-                } label: {
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 14, weight: .bold)).foregroundStyle(accent)
-                        .frame(width: 40, height: 40)
-                        .background(accent.opacity(0.14), in: Circle())
-                }
-            }
-            .padding(12)
-            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(accent.opacity(0.35), lineWidth: 1))
-            if method == "native" { SelfUpdateCard().padding(.top, 6); AppUpdateCard().padding(.top, 6) }
         }
     }
 }

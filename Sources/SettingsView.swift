@@ -17,7 +17,7 @@ private enum Screen: Identifiable, Hashable {
     case about, repo, token
     case dylibTemplate, ipaTemplate
     case certificates, otaDomain, certInspector, transparency, recoverData
-    case tutorials, extras, nativeInstall
+    case tutorials, extras, tableView, nativeInstall
     var id: String {
         switch self {
         case .github: return "github"; case .account: return "account"; case .localZSignAPI: return "local-zsign-api"
@@ -27,12 +27,14 @@ private enum Screen: Identifiable, Hashable {
         case .certificates: return "certs"; case .otaDomain: return "ota"; case .certInspector: return "inspect"; case .transparency: return "transparency"; case .recoverData: return "recover"
         case .tutorials: return "tutorials"
         case .extras: return "extras"
+        case .tableView: return "table-view"
         case .nativeInstall: return "native-install"
         }
     }
 }
 
 struct SettingsView: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @EnvironmentObject var config: Config
     @EnvironmentObject var session: Session
     @ObservedObject private var certs = CertificateStore.shared
@@ -54,26 +56,22 @@ struct SettingsView: View {
                             SettingsRow(icon: account.isLoggedIn ? "person.crop.circle.fill" : "person.crop.circle.badge.plus",
                                         title: "User Settings",
                                         subtitle: account.isLoggedIn ? "\(account.username ?? "") · account and device settings" : "Sign in or register") { screen = .account }
-                        }
-
-                        SettingsSection("Staff") {
-                            SettingsRow(icon: "chevron.left.forwardslash.chevron.right", title: "GitHub",
-                                        subtitle: githubSubtitle) { screen = .github }
+                            SettingsRow(icon: "plus.app.fill", title: "Request Certificate",
+                                        subtitle: "Submit or review your certificate requests") { screen = .signingRequestCertificate }
+                            SettingsRow(icon: "sparkles", title: "Extras",
+                                        subtitle: "Auto-update signing") { screen = .extras }
                         }
 
                         SettingsSection("Signing") {
                             SettingsRow(icon: "checkmark.seal.fill", title: "Certificates",
                                         subtitle: certs.active?.name ?? "No signing certificate") { screen = .certificates }
-                            SettingsRow(icon: "plus.app.fill", title: "Request Certificate",
-                                        subtitle: "Submit or review your certificate requests") { screen = .signingRequestCertificate }
-                            SettingsRow(icon: "bolt.horizontal.circle.fill", title: "Local ZSign API",
-                                        subtitle: "127.0.0.1:\(LocalZSignAPI.shared.port) · loopback signing control") { screen = .localZSignAPI }
+                            SettingsRow(icon: "gearshape.fill", title: "Settings",
+                                        subtitle: "Local ZSign API · AirShare Domain") { screen = .tableView }
+                        }
+
+                        SettingsSection("Install") {
                             SettingsRow(icon: "arrow.down.app.fill", title: "Install Method",
-                                        subtitle: NativeInstaller.isSelected ? "Native · built-in VPN + device pairing" : "OTA · itms-services over AirShare domain") { screen = .nativeInstall }
-                            SettingsRow(icon: "network", title: "AirShare Domain",
-                                        subtitle: "\(ServerConfig.installHost) · certbot via Actions") { screen = .otaDomain }
-                            SettingsRow(icon: "sparkles", title: "Extras",
-                                        subtitle: "Theme · Auto-update signing") { screen = .extras }
+                                        subtitle: NativeInstaller.isSelected ? "Native · built-in VPN · auto-updates" : "OTA · itms-services over AirShare domain") { screen = .nativeInstall }
                         }
 
                         SettingsSection("Support") {
@@ -119,6 +117,7 @@ struct SettingsView: View {
                 case .ipaTemplate:   IPATemplateScreen()
                 case .tutorials: TutorialsListScreen()
                 case .extras: ExtrasScreen()
+                case .tableView: TableViewSettingsScreen()
                 case .nativeInstall: NativeInstallScreen()
                 }
             }
@@ -225,7 +224,7 @@ private struct GitHubSettingsScreen: View {
         .fullScreenCover(item: $screen) { s in
             Group {
                 switch s {
-                case .github, .account, .localZSignAPI, .about, .certificates, .otaDomain, .extras:
+                case .github, .account, .localZSignAPI, .about, .certificates, .otaDomain, .extras, .tableView, .nativeInstall:
                     EmptyView()
                 case .signingRequestCertificate: CertificateRequestView()
                 case .repo:  RepoScreen()
@@ -236,7 +235,6 @@ private struct GitHubSettingsScreen: View {
                 case .dylibTemplate: DylibTemplateScreen()
                 case .ipaTemplate:   IPATemplateScreen()
                 case .tutorials:     TutorialsListScreen()
-                case .nativeInstall: NativeInstallScreen()
                 }
             }
             .environmentObject(config)
@@ -369,57 +367,6 @@ private struct SettingsLink: View {
             RowBody(icon: icon, imageName: imageName, imageURL: imageURL, title: title, subtitle: subtitle, trailingIcon: "safari")
         }
         .buttonStyle(RowPressStyle())
-    }
-}
-
-private struct AppearanceControls: View {
-    @ObservedObject private var theme = AppTheme.shared
-
-    private func row<T: View>(icon: String, title: String, subtitle: String, @ViewBuilder trailing: () -> T) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 19, weight: .semibold)).foregroundStyle(Theme.accent).frame(width: 30)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
-                Text(subtitle).font(.system(size: 12)).foregroundStyle(Theme.subtle)
-            }
-            Spacer(minLength: 8)
-            trailing()
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            row(icon: "circle.fill", title: "Accent Color", subtitle: "Choose your preferred accent") {
-                HStack(spacing: 7) {
-                    ForEach(Array(AppTheme.presets.prefix(5)), id: \.self) { hex in
-                        Button { theme.accentHex = hex } label: {
-                            Circle().fill(Color(hex: hex)).frame(width: 27, height: 27)
-                                .overlay(Circle().stroke(theme.accentHex.uppercased() == hex.uppercased() ? Theme.text : Color.clear, lineWidth: 2))
-                        }.buttonStyle(.plain)
-                    }
-                }
-            }
-            Divider().overlay(Theme.stroke)
-            row(icon: "sun.max.fill", title: "Appearance", subtitle: "Light / Dark") {
-                Picker("Appearance", selection: Binding(get: { theme.isDark ? 1 : 0 }, set: { theme.isDark = $0 == 1 })) {
-                    Text("☀︎").tag(0); Text("☾").tag(1)
-                }
-                .pickerStyle(.segmented).frame(width: 112)
-            }
-            Divider().overlay(Theme.stroke)
-            row(icon: "photo.fill", title: "Background", subtitle: "Solid / Grid / Particles") {
-                HStack(spacing: 7) {
-                    ForEach(ThemeBackground.allCases, id: \.rawValue) { bg in
-                        Button { theme.background = bg } label: {
-                            Image(systemName: bg.icon).font(.system(size: 14, weight: .bold)).foregroundStyle(theme.background == bg ? Theme.accent : Theme.subtle)
-                                .frame(width: 29, height: 29).background(Color.white.opacity(0.05)).clipShape(Circle())
-                                .overlay(Circle().stroke(theme.background == bg ? Theme.accent : Theme.stroke, lineWidth: 1))
-                        }.buttonStyle(.plain)
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -562,15 +509,40 @@ private struct StatusFooter: View {
     }
 }
 
-// MARK: - Extras (theme + auto-update signing)
+// MARK: - Signing Settings (signing tools)
+
+private struct TableViewSettingsScreen: View {
+    @EnvironmentObject var config: Config
+    @EnvironmentObject var session: Session
+    @State private var showAPI = false
+    @State private var showDomain = false
+
+    var body: some View {
+        DetailScreen(title: "Settings") {
+            VStack(alignment: .leading, spacing: 0) {
+                SettingsSection("Signing tools") {
+                    SettingsRow(icon: "bolt.horizontal.circle.fill", title: "Local ZSign API",
+                                subtitle: "127.0.0.1:\(LocalZSignAPI.shared.port) · loopback signing control") { showAPI = true }
+                    SettingsRow(icon: "network", title: "AirShare Domain",
+                                subtitle: "\(ServerConfig.installHost) · certbot via Actions") { showDomain = true }
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $showAPI) {
+            LocalZSignAPISettingsView().environmentObject(config).environmentObject(session).preferredColorScheme(.dark)
+        }
+        .fullScreenCover(isPresented: $showDomain) {
+            OTADomainScreen().environmentObject(config).environmentObject(session).preferredColorScheme(.dark)
+        }
+    }
+}
+
+// MARK: - Extras (auto-update signing)
 
 private struct ExtrasScreen: View {
     var body: some View {
         DetailScreen(title: "Extras") {
             VStack(alignment: .leading, spacing: 0) {
-                SettingsSection("Theme") {
-                    AppearanceControls()
-                }
                 SettingsSection("Auto-Update Signing") {
                     SourceUpdateControls()
                 }
@@ -582,6 +554,7 @@ private struct ExtrasScreen: View {
 // MARK: - Detail screen shell
 
 private struct DetailScreen<Content: View>: View {
+    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     let title: String
     @ViewBuilder var content: Content
     @Environment(\.dismiss) private var dismiss
@@ -661,61 +634,106 @@ private func statusLine(_ name: String, _ ok: Bool) -> some View {
 }
 
 private struct AboutScreen: View {
-    @State private var status: [String: Any]?
-    @State private var statusFailed = false
+    @Environment(\.openURL) private var openURL
+
+    private var version: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? Theme.appVersion
+    }
+    private var iosVersion: String { UIDevice.current.systemVersion }
+
+    private struct Credit: Identifiable {
+        let id = UUID()
+        let name: String, blurb: String, asset: String, symbol: String, url: String
+    }
+    private let credits: [Credit] = [
+        Credit(name: "MRZefv", blurb: "Built AirShare. Sign anything, keep it local.", asset: "airshare_mark", symbol: "person.fill", url: "https://airshare.lol"),
+        Credit(name: "DELvEK", blurb: "Trusted partner. Respected, protected apps updated daily with screenshots.", asset: "delvek_logo", symbol: "pawprint.fill", url: "https://delvek.net"),
+    ]
+    private let sponsors: [(String, Color)] = [
+        ("MYKALL", Color(red: 0.42, green: 0.85, blue: 0.45)),
+        ("JIMEDUDE.", Color(red: 0.40, green: 0.72, blue: 0.95)),
+        ("DELvEK", Color(red: 0.74, green: 0.35, blue: 0.88)),
+    ]
+
     var body: some View {
         DetailScreen(title: "About") {
-            Card {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Service status").font(.headline).foregroundStyle(Theme.text)
-                    if let st = status {
-                        statusLine("API", (st["ok"] as? Bool) ?? false || (st["db"] as? Bool) ?? false)
-                        statusLine("Database", (st["db"] as? Bool) ?? false)
-                        if let n = st["users"] as? Int { Text("\(n) registered accounts").font(.caption).foregroundStyle(Theme.subtle) }
-                    } else if statusFailed {
-                        statusLine("API", false)
-                        Text("airshare.lol unreachable").font(.caption).foregroundStyle(.orange)
+            VStack(spacing: 0) {
+                // App icon · name · version | iOS
+                Group {
+                    if UIImage(named: "airshare_logo") != nil {
+                        Image("airshare_logo").resizable().scaledToFill()
                     } else {
-                        HStack(spacing: 8) { ProgressView().tint(Theme.accent); Text("Checking airshare.lol…").font(.caption).foregroundStyle(Theme.subtle) }
+                        ZStack { Theme.accent; Image(systemName: "archivebox.fill").font(.system(size: 44, weight: .bold)).foregroundStyle(.black) }
                     }
                 }
-            }
-            .task {
-                guard let u = URL(string: ZefvAccount.apiBase + "status") else { statusFailed = true; return }
-                var req = URLRequest(url: u); req.timeoutInterval = 8; req.cachePolicy = .reloadIgnoringLocalCacheData
-                if let (d, _) = try? await URLSession.shared.data(for: req), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] { status = o }
-                else { statusFailed = true }
-            }
-            Card {
+                .frame(width: 120, height: 120)
+                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .shadow(color: Theme.accent.opacity(0.35), radius: 22)
+                .padding(.top, 18)
+
+                Text(Theme.appName).font(.system(size: 34, weight: .bold)).foregroundStyle(Theme.text).padding(.top, 18)
+                HStack(spacing: 10) {
+                    Text("Version \(version)")
+                    Text("|").foregroundStyle(Theme.subtle)
+                    Text("iOS \(iosVersion)")
+                }
+                .font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.text.opacity(0.9)).padding(.top, 8)
+
+                // Credits
+                sectionLabel("CREDITS").padding(.top, 54)
+                Rectangle().fill(Theme.stroke).frame(height: 0.5)
+                ForEach(Array(credits.enumerated()), id: \.element.id) { idx, c in
+                    Button { if let u = URL(string: c.url) { openURL(u) } } label: {
+                        HStack(spacing: 14) {
+                            Group {
+                                if UIImage(named: c.asset) != nil { Image(c.asset).resizable().scaledToFill() }
+                                else { ZStack { Color.white.opacity(0.08); Image(systemName: c.symbol).foregroundStyle(Theme.subtle) } }
+                            }
+                            .frame(width: 46, height: 46).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(c.name).font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.text)
+                                Text(c.blurb).font(.system(size: 14)).foregroundStyle(Theme.subtle).lineLimit(2).multilineTextAlignment(.leading)
+                            }
+                            Spacer(minLength: 6)
+                            Image(systemName: "arrow.up.right.square").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.accent)
+                        }
+                        .padding(.vertical, 14).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if idx < credits.count - 1 { Rectangle().fill(Theme.stroke).frame(height: 0.5).padding(.leading, 60) }
+                }
+                Rectangle().fill(Theme.stroke).frame(height: 0.5).padding(.leading, 60)
+
+                // Sponsors
+                sectionLabel("SPONSORS").padding(.top, 34)
+                HStack(spacing: 0) {
+                    ForEach(Array(sponsors.enumerated()), id: \.offset) { i, sp in
+                        Text(sp.0).font(.system(size: 22, weight: .semibold)).foregroundStyle(sp.1)
+                        if i < sponsors.count - 1 { Text(", ").font(.system(size: 22)).foregroundStyle(Theme.subtle) }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .lineLimit(1).minimumScaleFactor(0.6)
+                .padding(.top, 14).padding(.horizontal, 4)
+
                 HStack(spacing: 14) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.accent)
-                        Image(systemName: "archivebox.fill").font(.system(size: 26, weight: .bold)).foregroundStyle(.black)
-                    }
-                    .frame(width: 58, height: 58)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(Theme.appName).font(.title3.bold()).foregroundStyle(Theme.text)
-                        Text("Version \(Theme.appVersion)").font(.caption).foregroundStyle(Theme.subtle)
-                        Text("by MRzefv").font(.caption).foregroundStyle(Theme.accent)
-                    }
-                    Spacer()
+                    Rectangle().fill(Theme.stroke).frame(height: 1)
+                    Image(systemName: "cylinder.fill").font(.system(size: 22)).foregroundStyle(Theme.subtle)
+                    Rectangle().fill(Theme.stroke).frame(height: 1)
                 }
+                .padding(.top, 36)
+
+                Text("It puts the lotion on the dirty skin or the sponsor gets it again!")
+                    .font(.system(size: 14, design: .monospaced)).foregroundStyle(Theme.subtle)
+                    .multilineTextAlignment(.center).padding(.top, 26).padding(.bottom, 20)
             }
-            Card {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("What it does").font(.headline).foregroundStyle(Theme.text)
-                    Text("Drop a zip, extract it on-device, then push the files straight into a GitHub repo as a single commit. Built for working from an iPhone without a Mac.")
-                        .font(.caption).foregroundStyle(Theme.subtle)
-                }
-            }
-            Card {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Privacy").font(.headline).foregroundStyle(Theme.text)
-                    Text("Nothing leaves the device except pushes to api.github.com using your own token. No analytics, no accounts.")
-                        .font(.caption).foregroundStyle(Theme.subtle)
-                }
-            }
+            .frame(maxWidth: .infinity)
         }
+    }
+
+    private func sectionLabel(_ t: String) -> some View {
+        HStack { Text(t).font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.subtle).padding(.leading, 4); Spacer() }
+            .padding(.bottom, 12)
     }
 }
 
@@ -1698,7 +1716,6 @@ private struct TransparencyScreen: View {
     }
 }
 
-
 // MARK: - Install method (OTA vs native device install)
 
 private struct NativeInstallScreen: View {
@@ -1710,6 +1727,11 @@ private struct NativeInstallScreen: View {
     @AppStorage(VPNReconnectCoordinator.enabledKey) private var reconnectOn = false
     @AppStorage(VPNReconnectCoordinator.shortcutNameKey) private var shortcutName = VPNReconnectCoordinator.defaultShortcutName
     @AppStorage(VPNReconnectCoordinator.presentationKey) private var presentation = VPNReconnectPresentation.shareSheet.rawValue
+    @ObservedObject private var appUpdater = AppAutoUpdater.shared
+    @AppStorage(AppAutoUpdater.enabledKey) private var autoApps = false
+    @AppStorage(AppAutoUpdater.wifiOnlyKey) private var wifiOnly = false
+    @AppStorage(AppAutoUpdater.chargingOnlyKey) private var chargingOnly = false
+    @AppStorage(AppAutoUpdater.certRefreshKey) private var certRefresh = false
     @State private var confirmReset = false
 
     private var busy: Bool { manager.isBusy || installer.isActive }
@@ -1753,6 +1775,8 @@ private struct NativeInstallScreen: View {
                     }
 
                     if manager.mode == .builtIn { reconnectSection }
+
+                    appUpdateSection
                 }
             }
             .confirmationDialog("Forget this device's saved pairing?", isPresented: $confirmReset, titleVisibility: .visible) {
@@ -1826,4 +1850,86 @@ private struct NativeInstallScreen: View {
             Text("Restore your VPN").font(.caption.weight(.semibold)).foregroundStyle(Theme.subtle)
         }
     }
+
+    // MARK: App updates
+
+    private var activeCertLine: String? {
+        guard let c = CertificateStore.shared.active, let d = try? Data(contentsOf: c.provisionURL),
+              let exp = CertificateStore.profileInfo(d).expires else { return nil }
+        let days = Calendar.current.dateComponents([.day], from: Date(), to: exp).day ?? 0
+        return days >= 0 ? "\(c.name) · expires in \(days) day\(days == 1 ? "" : "s")" : "\(c.name) · expired"
+    }
+
+    @ViewBuilder private var appUpdateSection: some View {
+        Section {
+            Toggle(isOn: $autoApps) {
+                Label("Auto-update my apps", systemImage: "arrow.triangle.2.circlepath.circle.fill").foregroundStyle(Theme.text)
+            }
+            .tint(Theme.accent).listRowBackground(Theme.card)
+            Toggle(isOn: $wifiOnly) {
+                Label("Wi-Fi only", systemImage: "wifi").foregroundStyle(Theme.text)
+            }
+            .tint(Theme.accent).listRowBackground(Theme.card)
+            Toggle(isOn: $chargingOnly) {
+                Label("Only while charging", systemImage: "bolt.fill").foregroundStyle(Theme.text)
+            }
+            .tint(Theme.accent).listRowBackground(Theme.card)
+            Toggle(isOn: $certRefresh) {
+                Label("Re-sign when certificate changes", systemImage: "checkmark.seal.fill").foregroundStyle(Theme.text)
+            }
+            .tint(Theme.accent).listRowBackground(Theme.card)
+            TButton(title: "Check for Updates", icon: "magnifyingglass", busy: appUpdater.busy,
+                    enabled: !appUpdater.busy && !installer.isActive) { appUpdater.checkOnly() }
+            TButton(title: "Update Apps Now", icon: "arrow.down.app", busy: appUpdater.busy,
+                    enabled: !appUpdater.busy && !installer.isActive) { appUpdater.updateNow() }
+            TButton(title: "Re-sign Apps With Active Certificate", icon: "arrow.triangle.2.circlepath", busy: appUpdater.busy,
+                    enabled: !appUpdater.busy && !installer.isActive) { appUpdater.refreshCertificates() }
+            TButton(title: "Track Apps I've Signed", icon: "plus.circle", enabled: !appUpdater.busy) { appUpdater.trackSignedApps() }
+            if let line = activeCertLine { TNote(text: "Active certificate: " + line) }
+            if !appUpdater.status.isEmpty { TNote(text: appUpdater.status) }
+            ForEach(appUpdater.tracked) { app in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(app.name).foregroundStyle(Theme.text).lineLimit(1)
+                            Text("v\(app.version) · \(app.bundleID)").font(.caption.monospaced()).foregroundStyle(Theme.subtle).lineLimit(1)
+                            if let v = appUpdater.available[app.bundleID] {
+                                Text(app.skipped == v ? "v\(v) skipped" : "v\(v) available")
+                                    .font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)
+                            }
+                        }
+                        Spacer()
+                        Button { appUpdater.untrack(app) } label: {
+                            Image(systemName: "minus.circle.fill").foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    HStack(spacing: 14) {
+                        Toggle("Auto", isOn: Binding(get: { app.isAuto }, set: { appUpdater.setAuto($0, for: app) }))
+                            .toggleStyle(.switch).tint(Theme.accent).labelsHidden()
+                        Text("Auto").font(.caption).foregroundStyle(Theme.subtle)
+                        Spacer()
+                        if appUpdater.available[app.bundleID] != nil {
+                            Button("Update") { appUpdater.update(app) }.disabled(appUpdater.busy || installer.isActive)
+                            if app.skipped != appUpdater.available[app.bundleID] {
+                                Button("Skip") { appUpdater.skip(app) }.disabled(appUpdater.busy)
+                            }
+                        }
+                        if let prev = appUpdater.rollbackTarget(for: app) {
+                            Button("Roll back to v\(prev.version)") { appUpdater.rollBack(app) }
+                                .disabled(appUpdater.busy || installer.isActive)
+                        }
+                    }
+                    .font(.caption.weight(.semibold)).buttonStyle(.borderless).tint(Theme.accent)
+                }
+                .listRowBackground(Theme.card)
+            }
+            TNote(text: appUpdater.tracked.isEmpty
+                  ? "No tracked apps yet. Apps you install with Native are added automatically."
+                  : "Automatic checks run when you open AirShare (at most every 30 minutes) and only for apps with Auto on. Wi-Fi / charging limits apply to automatic checks only. Several updates share one VPN session. Rolling back skips the newer version.")
+        } header: {
+            Text("App updates").font(.caption.weight(.semibold)).foregroundStyle(Theme.subtle)
+        }
+    }
 }
+

@@ -505,7 +505,6 @@ struct SigningSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionLabel("SIGNING METHOD")
             savedBody
-            InstallMethodPicker()
         }
     }
 
@@ -1213,6 +1212,7 @@ struct SigningSheet: View {
             lastEntitlements = outcome.entitlements
             lastSizeBytes = outcome.sizeBytes
             let entry = try SignedStore.shared.add(outcome: outcome, icon: iconPNG ?? meta.iconPNG, certName: material.name)
+            NativeInstaller.registerOriginal(url, forSigned: entry.ipaURL)
             SignProfileStore.shared.save(options: options, signedBundleID: entry.bundleID,
                                          sourceBundleID: meta.bundleID, sourceVersion: meta.version)
             log.append(contentsOf: postSignLines(outcome.entitlements, entry: entry))
@@ -1220,6 +1220,8 @@ struct SigningSheet: View {
             onSigned(entry)
             ZefvAccount.shared.recordSign()
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+            // Native: start installing the moment signing finishes — no extra tap, no waiting.
+            if NativeInstaller.isSelected { Task { await install(entry) } }
         } catch {
             self.error = error.localizedDescription
             log.append("error: \(error.localizedDescription)")

@@ -139,7 +139,7 @@ nonisolated enum AgentStepParser {
                 if let last = out.indices.last { out[last].endedAt = time(i) }
                 continue }
             if low.hasPrefix("✓ install triggered") {
-                flushFiles(at: i); open(AgentStep(icon: "arrow.down.app", title: "Install", children: [AgentChild(text: "itms-services handoff → Home Screen", raw: [r])]), at: i)
+                flushFiles(at: i); open(AgentStep(icon: "arrow.down.app", title: "Install", children: [AgentChild(text: NativeInstaller.isSelected ? "Native install → built-in VPN" : "itms-services handoff → Home Screen", raw: [r])]), at: i)
                 if let last = out.indices.last { out[last].endedAt = time(i) }
                 continue }
             if low.contains("error") || low.contains("failed") || l.contains("❌") {

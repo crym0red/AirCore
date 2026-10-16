@@ -13,28 +13,43 @@ import Foundation
 import SwiftUI
 import UIKit
 import UserNotifications
+import Network
 
 struct TrackedApp: Codable, Identifiable, Equatable {
     var id: String { bundleID }
     let bundleID: String
     var name: String
     var version: String
+    var autoUpdate: Bool? = nil      // nil / true = include in automatic updates
+    var skipped: String? = nil       // source version the user chose to skip
+
+    var isAuto: Bool { autoUpdate != false }
 }
 
 @MainActor
 final class AppAutoUpdater: ObservableObject {
     static let shared = AppAutoUpdater()
     static let enabledKey = "AirShare.autoUpdateApps"
+    static let wifiOnlyKey = "AirShare.autoUpdateWifiOnly"
+    static let chargingOnlyKey = "AirShare.autoUpdateChargingOnly"
+    static let certRefreshKey = "AirShare.autoCertRefresh"
     private static let trackedKey = "AirShare.trackedApps"
     private static let lastCheckKey = "AirShare.lastAppUpdateCheck"
 
     @Published private(set) var tracked: [TrackedApp] = []
+    @Published private(set) var available: [String: String] = [:]   // bundleID -> newer source version
     @Published private(set) var busy = false
     @Published private(set) var status = ""
+
+    private let monitor = NWPathMonitor()
+    private var path: NWPath?
 
     private init() {
         if let data = UserDefaults.standard.data(forKey: Self.trackedKey),
            let list = try? JSONDecoder().decode([TrackedApp].self, from: data) { tracked = list }
+        monitor.pathUpdateHandler = { [weak self] p in Task { @MainActor in self?.path = p } }
+        monitor.start(queue: DispatchQueue(label: "airshare.netpath"))
+        UIDevice.current.isBatteryMonitoringEnabled = true
     }
 
     static var autoEnabled: Bool { NativeInstaller.isSelected && UserDefaults.standard.bool(forKey: enabledKey) }
@@ -49,11 +64,13 @@ final class AppAutoUpdater: ObservableObject {
         } else {
             tracked.append(TrackedApp(bundleID: bundleID, name: name, version: version))
         }
+        available[bundleID] = nil
         persist()
     }
 
     func untrack(_ app: TrackedApp) {
         tracked.removeAll { $0.bundleID == app.bundleID }
+        available[app.bundleID] = nil
         persist()
     }
 
@@ -67,8 +84,35 @@ final class AppAutoUpdater: ObservableObject {
         status = "Tracking \(tracked.count) app\(tracked.count == 1 ? "" : "s")"
     }
 
+    func setAuto(_ on: Bool, for app: TrackedApp) { mutate(app) { $0.autoUpdate = on ? nil : false } }
+    func skip(_ app: TrackedApp) {
+        guard let v = available[app.bundleID] else { return }
+        mutate(app) { $0.skipped = v }
+        available[app.bundleID] = nil
+    }
+    private func mutate(_ app: TrackedApp, _ f: (inout TrackedApp) -> Void) {
+        guard let i = tracked.firstIndex(where: { $0.bundleID == app.bundleID }) else { return }
+        f(&tracked[i]); persist()
+    }
+
     private func persist() {
         if let data = try? JSONEncoder().encode(tracked) { UserDefaults.standard.set(data, forKey: Self.trackedKey) }
+    }
+
+    // MARK: Conditions
+
+    /// Why automatic updates must wait right now (nil = go ahead). Manual actions ignore this.
+    private var blocker: String? {
+        let d = UserDefaults.standard
+        if d.bool(forKey: Self.wifiOnlyKey) {
+            let p = path ?? monitor.currentPath
+            if !(p.status == .satisfied && p.usesInterfaceType(.wifi) && !p.isExpensive) { return "Waiting for Wi-Fi" }
+        }
+        if d.bool(forKey: Self.chargingOnlyKey) {
+            let s = UIDevice.current.batteryState
+            if s != .charging && s != .full { return "Waiting for the charger" }
+        }
+        return nil
     }
 
     // MARK: Triggers
@@ -77,66 +121,133 @@ final class AppAutoUpdater: ObservableObject {
         guard Self.autoEnabled, !busy, !tracked.isEmpty else { return }
         let last = UserDefaults.standard.double(forKey: Self.lastCheckKey)
         guard Date().timeIntervalSince1970 - last > 30 * 60 else { return }
-        Task { await run() }
+        if let why = blocker { status = why; return }
+        Task { await run(.auto) }
     }
 
-    func updateNow() { Task { await run() } }
+    func updateNow() { Task { await run(.all) } }
+    func checkOnly() { Task { await run(.check) } }
+    func update(_ app: TrackedApp) { Task { await run(.one(app.bundleID)) } }
+    func refreshCertificates() { Task { await run(.certs) } }
+    func rollBack(_ app: TrackedApp) { Task { await rollBackNow(app) } }
+
+    /// The signed build an app would return to (newest one with a different version than the installed one).
+    func rollbackTarget(for app: TrackedApp) -> SignedEntry? {
+        SignedStore.shared.entries.first { $0.bundleID == app.bundleID && $0.version != app.version
+            && FileManager.default.fileExists(atPath: $0.ipaURL.path) }
+    }
+
+    /// Latest signed build was made with a different certificate than the active one.
+    func needsCertRefresh(_ app: TrackedApp) -> Bool {
+        guard let active = CertificateStore.shared.active,
+              let e = SignedStore.shared.entries.first(where: { $0.bundleID == app.bundleID }) else { return false }
+        return e.certName != active.name
+    }
 
     // MARK: Update loop
 
-    private func run() async {
-        guard !busy else { return }
-        guard !NativeInstaller.shared.isActive, !SelfUpdater.shared.state.isBusy else {
-            status = "Waiting — another install is running"
-            return
-        }
-        busy = true
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastCheckKey)
+    enum Mode: Equatable { case auto, all, check, one(String), certs }
 
+    private func beginBackground() -> () -> Void {
         var bg: UIBackgroundTaskIdentifier = .invalid
         bg = UIApplication.shared.beginBackgroundTask(withName: "airshare-app-updates") {
             if bg != .invalid { UIApplication.shared.endBackgroundTask(bg); bg = .invalid }
         }
-        defer {
-            busy = false
-            if bg != .invalid { UIApplication.shared.endBackgroundTask(bg) }
-        }
+        return { if bg != .invalid { UIApplication.shared.endBackgroundTask(bg); bg = .invalid } }
+    }
 
-        status = "Checking sources…"
-        var updated = 0, failed = 0
+    private func run(_ mode: Mode) async {
+        guard !busy else { return }
+        guard !NativeInstaller.shared.isActive else { status = "Waiting — another install is running"; return }
+        busy = true
+        if mode == .auto { UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastCheckKey) }
+        let endBackground = beginBackground()
+        defer { busy = false; endBackground() }
+
+        var updated = 0, failed = 0, refreshed = 0
+        var jobs: [(TrackedApp, SourceApp, URL)] = []
         let trackedNow = tracked
 
-        // Newest version of each tracked app across all your sources.
-        var latest: [String: SourceApp] = [:]
-        for source in SourceStore.shared.sources {
-            guard let repo = try? await SourceStore.shared.fetch(source) else { continue }
-            for group in repo.groups {
-                let app = group.latest
-                guard trackedNow.contains(where: { Self.sourceBundle($0) == app.bundle }) else { continue }
-                if let cur = latest[app.bundle], !Self.isNewer(app.version, than: cur.version) { continue }
-                latest[app.bundle] = app
+        if mode != .certs {
+            status = "Checking sources…"
+            var latest: [String: SourceApp] = [:]
+            for source in SourceStore.shared.sources {
+                guard let repo = try? await SourceStore.shared.fetch(source) else { continue }
+                for group in repo.groups {
+                    let app = group.latest
+                    guard trackedNow.contains(where: { Self.sourceBundle($0) == app.bundle }) else { continue }
+                    if let cur = latest[app.bundle], !Self.isNewer(app.version, than: cur.version) { continue }
+                    latest[app.bundle] = app
+                }
+            }
+            var avail: [String: String] = [:]
+            for t in trackedNow {
+                guard let app = latest[Self.sourceBundle(t)],
+                      Self.isNewer(app.version, than: Self.installedSourceVersion(t)) else { continue }
+                avail[t.bundleID] = app.version
+                if t.skipped == app.version, mode != .one(t.bundleID) { continue }
+                switch mode {
+                case .auto: guard t.isAuto else { continue }
+                case .one(let id): guard id == t.bundleID else { continue }
+                default: break
+                }
+                if mode == .check { continue }
+                guard let url = app.downloadURL else { failed += 1; continue }
+                jobs.append((t, app, url))
+            }
+            available = avail
+            if mode == .check {
+                status = avail.isEmpty ? "All tracked apps are up to date" : "\(avail.count) update\(avail.count == 1 ? "" : "s") available"
+                return
             }
         }
 
-        for t in trackedNow {
-            let installed = Self.installedSourceVersion(t)
-            guard let app = latest[Self.sourceBundle(t)], Self.isNewer(app.version, than: installed) else { continue }
-            guard let url = app.downloadURL else { failed += 1; continue }
-            status = "Updating \(app.name) \(installed) → \(app.version)…"
+        // One VPN / tunnel session for the whole batch instead of one per app.
+        let batch = UUID()
+        var holding = false
+        func hold() { if !holding { DeviceInstallationManager.shared.retainWorkflow(batch); holding = true } }
+        defer { if holding { DeviceInstallationManager.shared.releaseWorkflow(batch) } }
+        if jobs.count > 1 { hold() }
+
+        for (t, app, url) in jobs {
+            status = "Updating \(app.name) \(Self.installedSourceVersion(t)) → \(app.version)…"
             do {
                 try await update(app, from: url, tracked: t)
                 updated += 1
+                mutate(t) { $0.skipped = nil }
+                available[t.bundleID] = nil
             } catch {
                 failed += 1
                 status = "\(app.name): \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
             }
         }
 
-        if updated == 0 && failed == 0 { status = "All tracked apps are up to date" }
-        else if failed == 0 { status = "Updated \(updated) app\(updated == 1 ? "" : "s")" }
-        else if updated > 0 { status = "Updated \(updated), \(failed) failed" }
+        // Re-sign apps whose build was signed with a different (older) certificate.
+        let wantCerts = mode == .certs || ((mode == .auto || mode == .all) && UserDefaults.standard.bool(forKey: Self.certRefreshKey))
+        if wantCerts {
+            let updatedIDs = Set(jobs.map { $0.0.bundleID })
+            let todo = tracked.filter { !updatedIDs.contains($0.bundleID) && needsCertRefresh($0) && ($0.isAuto || mode == .certs) }
+            if todo.count > 1 { hold() }
+            for t in todo {
+                status = "Re-signing \(t.name) with \(CertificateStore.shared.active?.name ?? "active certificate")…"
+                do { try await resign(t); refreshed += 1 }
+                catch {
+                    failed += 1
+                    status = "\(t.name): \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
+                }
+            }
+        }
+
+        if updated == 0 && failed == 0 && refreshed == 0 {
+            status = mode == .certs ? "All apps already use the active certificate" : "All tracked apps are up to date"
+        } else if failed == 0 {
+            var parts: [String] = []
+            if updated > 0 { parts.append("Updated \(updated) app\(updated == 1 ? "" : "s")") }
+            if refreshed > 0 { parts.append("Re-signed \(refreshed) app\(refreshed == 1 ? "" : "s")") }
+            status = parts.joined(separator: " · ")
+        } else if updated + refreshed > 0 { status = "Done \(updated + refreshed), \(failed) failed" }
         // single failure keeps its specific message
-        if updated > 0 { notify("Updated \(updated) app\(updated == 1 ? "" : "s") in AirShare") }
+        if updated + refreshed > 0 { notify("Updated \(updated + refreshed) app\(updated + refreshed == 1 ? "" : "s") in AirShare") }
     }
 
     /// Bundle ID the sources list for this app (differs from the installed one if it was renamed / randomized when signed).
@@ -178,8 +289,47 @@ final class AppAutoUpdater: ObservableObject {
         }.value
         let icon = (try? IPAMeta.read(outcome.ipaURL).iconPNG) ?? nil
         let entry = try SignedStore.shared.add(outcome: outcome, icon: icon, certName: material.name)
+        NativeInstaller.registerOriginal(ipa, forSigned: entry.ipaURL)
         try await NativeInstaller.shared.install(entry)   // records the new version via recordInstalled
         SignProfileStore.shared.setSourceVersion(app.version, forSigned: t.bundleID)
+    }
+
+    /// Re-signs the newest signed build of an app with the active certificate and installs it (same version).
+    private func resign(_ t: TrackedApp) async throws {
+        guard let e = SignedStore.shared.entries.first(where: { $0.bundleID == t.bundleID }),
+              FileManager.default.fileExists(atPath: e.ipaURL.path) else { throw SourceWatcherError.downloadFailed }
+        let material = try CertificateStore.shared.activeMaterial()
+        var o = SignOptions()
+        o.name = e.name; o.bundleID = e.bundleID; o.version = e.version
+        let options = o, src = e.ipaURL
+        let outcome = try await Task.detached(priority: .userInitiated) {
+            try await Signer.signDetached(ipaURL: src, material: material, options: options, onLog: nil, captureOutput: false)
+        }.value
+        let icon = (try? IPAMeta.read(outcome.ipaURL).iconPNG) ?? nil
+        let entry = try SignedStore.shared.add(outcome: outcome, icon: icon, certName: material.name)
+        NativeInstaller.carryOriginal(from: e.ipaURL, to: entry.ipaURL)
+        try await NativeInstaller.shared.install(entry)
+    }
+
+    /// Reinstalls the previous signed build and skips the version it replaced.
+    private func rollBackNow(_ t: TrackedApp) async {
+        guard !busy else { return }
+        guard !NativeInstaller.shared.isActive else { status = "Waiting — another install is running"; return }
+        guard let prev = rollbackTarget(for: t) else { status = "No earlier build of \(t.name) to roll back to"; return }
+        busy = true
+        let endBackground = beginBackground()
+        defer { busy = false; endBackground() }
+        let from = Self.installedSourceVersion(t)
+        status = "Rolling \(t.name) back to v\(prev.version)…"
+        do {
+            try await NativeInstaller.shared.install(prev)
+            SignProfileStore.shared.setSourceVersion(prev.version, forSigned: t.bundleID)
+            mutate(t) { $0.skipped = from }
+            available[t.bundleID] = nil
+            status = "\(t.name) is back on v\(prev.version) — v\(from) skipped"
+        } catch {
+            status = "\(t.name): \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)"
+        }
     }
 
     private func notify(_ text: String) {
@@ -198,66 +348,5 @@ final class AppAutoUpdater: ObservableObject {
             if av != bv { return av > bv }
         }
         return false
-    }
-}
-
-// MARK: - Settings card (under Self-update in Native mode)
-
-struct AppUpdateCard: View {
-    @ObservedObject private var updater = AppAutoUpdater.shared
-    @AppStorage(AppAutoUpdater.enabledKey) private var auto = false
-    private let accent = Color(red: 1.0, green: 0.6, blue: 0.1)
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("APP UPDATES").font(.system(size: 11, weight: .heavy)).kerning(2.2).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle(isOn: $auto) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Auto-update my apps").font(.system(size: 15, weight: .semibold))
-                        Text("When you open AirShare, newer versions of your tracked apps are signed and installed automatically.")
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
-                    }
-                }
-                .tint(accent)
-                HStack(spacing: 10) {
-                    Button { updater.updateNow() } label: { Text("Update now").font(.system(size: 13, weight: .semibold)) }
-                        .buttonStyle(.borderedProminent).tint(accent).disabled(updater.busy)
-                    Button { updater.trackSignedApps() } label: { Text("Track apps I've signed").font(.system(size: 13, weight: .semibold)) }
-                        .buttonStyle(.bordered).tint(accent)
-                    if updater.busy { ProgressView() }
-                    Spacer(minLength: 0)
-                }
-                if !updater.status.isEmpty {
-                    Text(updater.status).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3)
-                }
-                if updater.tracked.isEmpty {
-                    Text("No tracked apps yet. Apps you install with Native are added automatically.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                } else {
-                    VStack(spacing: 0) {
-                        ForEach(updater.tracked) { app in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(app.name).font(.system(size: 14, weight: .medium)).lineLimit(1)
-                                    Text("v\(app.version) · \(app.bundleID)").font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(.secondary).lineLimit(1)
-                                }
-                                Spacer()
-                                Button { updater.untrack(app) } label: {
-                                    Image(systemName: "minus.circle.fill").foregroundStyle(.red.opacity(0.85))
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            .padding(.vertical, 6)
-                            if app.id != updater.tracked.last?.id { Divider().opacity(0.3) }
-                        }
-                    }
-                }
-            }
-            .padding(12)
-            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(accent.opacity(0.35), lineWidth: 1))
-        }
     }
 }
