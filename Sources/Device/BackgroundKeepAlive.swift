@@ -64,7 +64,7 @@ final class BackgroundKeepAlive: ObservableObject {
             throw SongError(message: "That file can't be played. Try an MP3, M4A, WAV or AAC file.")
         }
         stopPreview()
-        for f in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] where f != dest { try? fm.removeItem(at: f) }
+        for f in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] where f.lastPathComponent != dest.lastPathComponent { try? fm.removeItem(at: f) }   // compare names: /var vs /private/var URLs differ and used to delete the new song too
         UserDefaults.standard.set(dest.lastPathComponent, forKey: Self.songKey)
         UserDefaults.standard.set(picked.deletingPathExtension().lastPathComponent, forKey: Self.songTitleKey)
     }

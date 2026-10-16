@@ -1835,14 +1835,9 @@ private struct NativeInstallScreen: View {
     private var heroCard: some View {
         VStack(spacing: 18) {
             HStack(spacing: 14) {
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .fill(LinearGradient(colors: [Theme.accent, accent2], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 56, height: 76)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black).padding(3)
-                            .overlay(alignment: .top) { Capsule().fill(Color.white.opacity(0.1)).frame(width: 20, height: 5).padding(.top, 8) }
-                    )
-                    .shadow(color: Theme.accent.opacity(0.35), radius: 12, y: 6)
+                PhoneIcon(height: 92)
+                    .shadow(color: Theme.accent.opacity(0.4), radius: 14, y: 6)
+                    .frame(width: 60)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(deviceModel).font(.system(size: 21, weight: .semibold, design: .rounded)).foregroundStyle(Theme.text)
                     Text("iOS \(UIDevice.current.systemVersion) · Developer Mode").font(.footnote).foregroundStyle(Theme.subtle)
@@ -2097,18 +2092,20 @@ private struct NativeInstallScreen: View {
     }
 
     private var songCard: some View {
-        HStack(spacing: 12) {
+        // The title can outlive the file (e.g. after an older build): only trust it when the file is really there.
+        let hasSong = !songTitle.isEmpty && BackgroundKeepAlive.songURL != nil
+        return HStack(spacing: 12) {
             Image(systemName: "music.note").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.accent)
                 .frame(width: 38, height: 38)
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black.opacity(0.5)))
             VStack(alignment: .leading, spacing: 2) {
                 Text("Install song").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
-                Text(songError ?? (songTitle.isEmpty ? "Pick a song to play while apps install"
+                Text(songError ?? (!hasSong ? "Pick a song to play while apps install"
                                    : (keepAlive ? songTitle : "Turn on “Finish installs in background” to hear it")))
                     .font(.system(size: 12)).foregroundStyle(songError == nil ? Theme.subtle : Color.red).lineLimit(2)
             }
             Spacer(minLength: 4)
-            if songTitle.isEmpty {
+            if !hasSong {
                 Button { chooseSong() } label: {
                     Text("Choose").font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
                         .padding(.horizontal, 12).padding(.vertical, 7).background(Theme.accent).clipShape(Capsule())
