@@ -44,6 +44,14 @@ final class InstallQueue: ObservableObject {
         return "\(doneCount + 1)/\(items.count) · \(step) \(c.app.name) \(Int((c.progress * 100).rounded()))%"
     }
 
+    /// Short form for the lock-screen player line ("Signing Aiko 42%").
+    var compact: String {
+        guard let c = current else { return "\(doneCount)/\(items.count) done" }
+        let step: String
+        switch c.status { case .downloading: step = "Downloading"; case .signing: step = "Signing"; default: step = "Installing" }
+        return "\(step) \(Int((c.progress * 100).rounded()))%"
+    }
+
     private init() {}
 
     func contains(_ app: SourceApp) -> Bool { items.contains { $0.app.id == app.id && !isFinal($0.status) } }
@@ -156,38 +164,41 @@ final class InstallQueue: ObservableObject {
     }
 }
 
-/// Floating progress pill for the queue.
+/// Floating progress pill for the queue: app icon wrapped in a transparent progress ring, percentage on the right.
 struct InstallQueuePill: View {
     @ObservedObject private var q = InstallQueue.shared
     @ObservedObject private var liveTheme = AppTheme.shared
 
+    private var percent: Int { Int(((q.isRunning ? q.fraction : 1) * 100).rounded()) }
+
     var body: some View {
         if !q.items.isEmpty {
-            HStack(spacing: 10) {
-                if q.isRunning { ProgressView().tint(Theme.accent) }
-                else { Image(systemName: q.failedCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(q.failedCount == 0 ? Theme.accent : .orange) }
-                VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                ZStack {
+                    SourceIcon(url: (q.current?.app ?? q.items.last?.app)?.iconURL, side: 34, fallback: (q.current?.app ?? q.items.last?.app)?.name ?? "")
+                    Circle().stroke(Color.clear, lineWidth: 3)                       // transparent track
+                    Circle().trim(from: 0, to: max(0.03, q.isRunning ? q.fraction : 1))
+                        .stroke(q.failedCount > 0 && !q.isRunning ? Color.orange : Theme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
+                .frame(width: 44, height: 44)
+
+                VStack(alignment: .leading, spacing: 3) {
                     Text(q.isRunning ? q.title : (q.failedCount == 0 ? "Installed \(q.doneCount) app\(q.doneCount == 1 ? "" : "s")" : "\(q.doneCount) installed · \(q.failedCount) failed"))
-                        .font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.text)
+                        .font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.text).lineLimit(1)
                     Text(q.isRunning ? q.summary : (q.items.compactMap { i -> String? in if case .failed(let m) = i.status { return "\(i.app.name): \(m)" }; return nil }.first ?? "All done"))
                         .font(.system(size: 11)).foregroundStyle(Theme.subtle).lineLimit(1)
-                    if q.isRunning {
-                        GeometryReader { g in
-                            ZStack(alignment: .leading) {
-                                Capsule().fill(Color.white.opacity(0.12))
-                                Capsule().fill(Theme.accent).frame(width: g.size.width * q.fraction)
-                            }
-                        }.frame(height: 4)
-                    }
                 }
-                if !q.isRunning {
-                    Button { q.dismiss() } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 20)).foregroundStyle(Theme.subtle) }
+                Spacer(minLength: 6)
+                if q.isRunning {
+                    Text("\(percent)%").font(.system(size: 17, weight: .bold)).foregroundStyle(Theme.accent).monospacedDigit()
+                } else {
+                    Button { q.dismiss() } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 22)).foregroundStyle(Theme.subtle) }
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Theme.accent.opacity(0.4), lineWidth: 1))
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Theme.accent.opacity(0.4), lineWidth: 1))
             .padding(.horizontal, 16)
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .animation(.easeInOut(duration: 0.2), value: q.items.count)

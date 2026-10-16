@@ -1801,6 +1801,7 @@ private struct NativeInstallScreen: View {
                 chunkCard
                 keepAliveCard
                 songCard
+                StorageCleanCard()
                 actionGrid
                 lastInstallCard
                 tipCard

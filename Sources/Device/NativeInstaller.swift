@@ -375,6 +375,7 @@ final class NativeInstaller: ObservableObject {
 
 struct NativeInstallBanner: View {
     @ObservedObject private var installer = NativeInstaller.shared
+    @ObservedObject private var queue = InstallQueue.shared
     @ObservedObject private var reconnect = VPNReconnectCoordinator.shared
     @ObservedObject private var manager = DeviceInstallationManager.shared
     @ObservedObject private var pairing = DevicePairingService.shared
@@ -382,7 +383,7 @@ struct NativeInstallBanner: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            if let job = installer.job, installer.stage != .idle {
+            if let job = installer.job, installer.stage != .idle, !queue.isRunning {
                 card(job)
             }
             if reconnect.pendingShortcutName != nil, !installer.isActive {

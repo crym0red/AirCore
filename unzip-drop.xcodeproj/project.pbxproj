@@ -22,6 +22,7 @@
 		AD5F00000000000000000002 /* AirShareActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5F0000000000000000000B /* AirShareActivityAttributes.swift */; };
 		AD5F00000000000000000003 /* AirShareLiveActivity.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AD5F0000000000000000000E /* AirShareLiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		AD5F00000000000000000004 /* AirShareActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5F0000000000000000000B /* AirShareActivityAttributes.swift */; };
+		AD5F00000000000000000006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AD5F0000000000000000000F /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -71,6 +72,7 @@
 		AD5F0000000000000000000B /* AirShareActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirShareActivityAttributes.swift; sourceTree = "<group>"; };
 		AD5F0000000000000000000C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AD5F0000000000000000000E /* AirShareLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AirShareLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		AD5F0000000000000000000F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -149,6 +151,7 @@
 				AD5F0000000000000000000A /* AirShareLiveActivity.swift */,
 				AD5F0000000000000000000B /* AirShareActivityAttributes.swift */,
 				AD5F0000000000000000000C /* Info.plist */,
+				AD5F0000000000000000000F /* Assets.xcassets */,
 			);
 			path = AirShareLiveActivity;
 			sourceTree = "<group>";
@@ -209,6 +212,7 @@
 			buildPhases = (
 				AD5F0000000000000000001F /* Sources */,
 				AD5F00000000000000000020 /* Frameworks */,
+				AD5F00000000000000000021 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -287,6 +291,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				A403726B2E112543E3434DCA /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AD5F00000000000000000021 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AD5F00000000000000000006 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

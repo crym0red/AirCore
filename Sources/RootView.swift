@@ -58,6 +58,7 @@ struct RootView: View {
 
         .task {
             theme.startCycleIfNeeded()
+            Task.detached(priority: .utility) { try? await Task.sleep(nanoseconds: 8_000_000_000); await StorageCleaner.run() }
             Task { _ = await LibraryCache.shared.refresh() }   // Library is ready before you open it
             await SourceStore.shared.warmUpAtLaunch()
             WidgetDataManager.shared.refresh()

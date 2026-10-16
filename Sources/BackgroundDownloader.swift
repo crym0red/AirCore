@@ -49,6 +49,7 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
     private var eventDone: (() -> Void)?
     private var expectedSingle: [String: Int64] = [:]
     private var pollTimer: DispatchSourceTimer?
+    private var retries: [String: [Int: Int]] = [:]      // piece retries per job (resume instead of restarting)
 
     override init() {
         super.init()
@@ -88,6 +89,22 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
     }
     private static func destURL(_ job: Job) -> URL { AppPaths.dir("inbox").appendingPathComponent(job.destName) }
 
+    /// Deletes piece folders that no stored job owns (left over from crashes / cancelled jobs).
+    @discardableResult
+    func pruneOrphans(olderThan age: TimeInterval = 86_400) -> Int64 {
+        let fm = FileManager.default
+        lock.lock(); let ids = Set(jobs.keys); lock.unlock()
+        var freed: Int64 = 0
+        for dir in (try? fm.contentsOfDirectory(at: Self.root, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
+            guard dir.lastPathComponent != "jobs.json", !ids.contains(dir.lastPathComponent) else { continue }
+            let m = (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            guard Date().timeIntervalSince(m) > age else { continue }
+            freed += StorageCleaner.size(of: dir)
+            try? fm.removeItem(at: dir)
+        }
+        return freed
+    }
+
     func adopt(identifier: String, completion: @escaping () -> Void) {
         guard identifier == Self.sessionID else { completion(); return }
         lock.lock(); eventDone = completion; lock.unlock()
@@ -104,6 +121,28 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
     }
 
     struct RangeProbe { let size: Int64; let etag: String? }
+
+    private static let probeLock = NSLock()
+    nonisolated(unsafe) private static var probeCache: [URL: (probe: RangeProbe?, at: Date)] = [:]
+
+    /// Probe with a 10-minute memory: opening an app's page warms it, so tapping Download starts right away.
+    static func cachedProbe(_ src: URL) async -> RangeProbe? {
+        probeLock.lock(); let hit = probeCache[src]; probeLock.unlock()
+        if let hit, Date().timeIntervalSince(hit.at) < 600 { return hit.probe }
+        let p = await probeRanges(src)
+        probeLock.lock(); probeCache[src] = (p, Date()); probeLock.unlock()
+        return p
+    }
+
+    /// Called when an app's page opens: opens the connection (DNS + TLS + ranges check) and pulls screenshots into the cache.
+    static func prefetch(_ app: SourceApp) async {
+        let probeTask = Task { if let u = app.downloadURL { _ = await cachedProbe(u) } }
+        for u in ([app.iconURL].compactMap { $0 } + Array(app.screenshots.prefix(4))) {
+            var r = URLRequest(url: u); r.cachePolicy = .returnCacheDataElseLoad
+            _ = try? await URLSession.shared.data(for: r)
+        }
+        await probeTask.value
+    }
 
     /// HEAD request: does the server accept byte ranges, and how big is the file?
     static func probeRanges(_ src: URL) async -> RangeProbe? {
@@ -129,13 +168,15 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
         if let existing {
             let alive = await session.allTasks.contains { ($0.taskDescription ?? "").hasPrefix(existing.id + "|") }
             if alive { return try await attach(existing.id, launch: nil, progress: progress) }
+            // Nothing running (app was killed / network gave up): keep the finished pieces and only fetch the rest.
+            if resumable(existing) { return try await attach(existing.id, launch: existing, progress: progress, resumed: true) }
             drop(existing.id)
         }
 
         var parts = [Part(index: 0, lo: 0, hi: -1, done: false)]
         var total: Int64 = -1
         var etag: String?
-        if let probe = await Self.probeRanges(src), probe.size >= 24_000_000 {
+        if let probe = await Self.cachedProbe(src), probe.size >= 24_000_000 {
             total = probe.size
             etag = probe.etag
             let wanted: Int64 = probe.size >= 300_000_000 ? 8 : 6
@@ -152,13 +193,31 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
         return try await attach(job.id, launch: job, progress: progress)
     }
 
-    private func attach(_ id: String, launch: Job?, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+    /// A stored job is worth resuming when its finished pieces are still on disk.
+    private func resumable(_ job: Job) -> Bool {
+        let fm = FileManager.default
+        guard job.parts.contains(where: { $0.done }) else { return false }
+        return job.parts.filter { $0.done }.allSatisfy { fm.fileExists(atPath: Self.partURL(job.id, $0.index).path) }
+    }
+
+    private func attach(_ id: String, launch: Job?, progress: @escaping @Sendable (Double) -> Void, resumed: Bool = false) async throws -> URL {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<URL, Error>) in
                 let h: Handler = (progress, { c.resume(with: $0) })
-                lock.lock(); handlers[id, default: []].append(h); lock.unlock()
+                lock.lock(); handlers[id, default: []].append(h)
+                if resumed, let job = launch {
+                    // Count the finished pieces so the bar starts where it left off.
+                    var m = received[id] ?? [:]
+                    for p in job.parts where p.done {
+                        m[p.index] = (try? FileManager.default.attributesOfItem(atPath: Self.partURL(id, p.index).path)[.size] as? Int64) ?? 0
+                    }
+                    received[id] = m
+                }
+                lock.unlock()
                 self.startPolling()
-                if let launch { self.launchTasks(launch) }
+                if let launch {
+                    if launch.parts.allSatisfy({ $0.done }) { self.finalize(launch) } else { self.launchTasks(launch) }
+                }
             }
         } onCancel: { self.cancel(id) }
     }
@@ -174,7 +233,7 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
     /// Forget a job: cancel its tasks and delete its pieces.
     private func drop(_ id: String) {
         lock.lock()
-        jobs.removeValue(forKey: id); received.removeValue(forKey: id); failures.removeValue(forKey: id); expectedSingle.removeValue(forKey: id)
+        jobs.removeValue(forKey: id); received.removeValue(forKey: id); failures.removeValue(forKey: id); expectedSingle.removeValue(forKey: id); retries.removeValue(forKey: id)
         saveIndexLocked()
         lock.unlock()
         session.getAllTasks { tasks in
@@ -186,16 +245,44 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
     private func launchTasks(_ job: Job) {
         guard let src = URL(string: job.src) else { return }
         let ifRange: String? = job.etag.flatMap { $0.hasPrefix("W/") ? nil : $0 }
-        for part in job.parts where !part.done {
+        for part in job.parts where !part.done { launchPart(job, part, src: src, ifRange: ifRange) }
+    }
+
+    private func launchPart(_ job: Job, _ part: Part, src: URL? = nil, ifRange: String? = nil, resumeData: Data? = nil) {
+        guard let src = src ?? URL(string: job.src) else { return }
+        let task: URLSessionDownloadTask
+        if let resumeData {
+            task = session.downloadTask(withResumeData: resumeData)
+        } else {
             var req = Self.request(for: src)
             if part.hi >= 0 {
                 req.setValue("bytes=\(part.lo)-\(part.hi)", forHTTPHeaderField: "Range")
-                if let ifRange { req.setValue(ifRange, forHTTPHeaderField: "If-Range") }
+                let tag = ifRange ?? job.etag.flatMap { $0.hasPrefix("W/") ? nil : $0 }
+                if let tag { req.setValue(tag, forHTTPHeaderField: "If-Range") }
             }
-            let task = session.downloadTask(with: req)
-            task.taskDescription = "\(job.id)|\(job.gen)|\(part.index)"
-            task.resume()
+            task = session.downloadTask(with: req)
         }
+        task.taskDescription = "\(job.id)|\(job.gen)|\(part.index)"
+        task.resume()
+    }
+
+    /// One piece failed (network blip, timeout): retry just that piece a few times instead of starting over.
+    /// A single-stream download resumes from where it stopped when the server handed back resume data.
+    private func retryPiece(_ job: Job, index: Int, error: Error) -> Bool {
+        guard let part = job.parts.first(where: { $0.index == index }), !part.done else { return false }
+        lock.lock()
+        let n = (retries[job.id]?[index] ?? 0) + 1
+        guard n <= 4 else { lock.unlock(); return false }
+        retries[job.id, default: [:]][index] = n
+        lock.unlock()
+        let resume = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+        DispatchQueue.global().asyncAfter(deadline: .now() + min(8, 1.0 * Double(n * n))) { [weak self] in
+            guard let self else { return }
+            self.lock.lock(); let current = self.jobs[job.id]; self.lock.unlock()
+            guard let current, current.gen == job.gen else { return }
+            self.launchPart(current, part, resumeData: part.hi < 0 ? resume : nil)
+        }
+        return true
     }
 
     private static func parse(_ task: URLSessionTask) -> (id: String, gen: Int, index: Int)? {
@@ -319,6 +406,7 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
         if let failure { fail(job, failure); return }
         if let error {
             if (error as NSError).code == NSURLErrorCancelled { return }
+            if retryPiece(job, index: t.index, error: error) { return }
             fail(job, error); return
         }
         if job.parts.allSatisfy({ $0.done }) { finalize(job) }
@@ -346,7 +434,7 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
             next.total = -1
             next.etag = nil
             lock.lock()
-            jobs[job.id] = next; received[job.id] = nil; failures[job.id] = nil
+            jobs[job.id] = next; received[job.id] = nil; failures[job.id] = nil; retries[job.id] = nil
             saveIndexLocked()
             lock.unlock()
             launchTasks(next)
@@ -393,7 +481,7 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
         }
         lock.lock()
         let hs = handlers.removeValue(forKey: job.id) ?? []
-        jobs.removeValue(forKey: job.id); received.removeValue(forKey: job.id); failures.removeValue(forKey: job.id)
+        jobs.removeValue(forKey: job.id); received.removeValue(forKey: job.id); failures.removeValue(forKey: job.id); retries.removeValue(forKey: job.id)
         saveIndexLocked()
         lock.unlock()
         try? fm.removeItem(at: Self.root.appendingPathComponent(job.id))

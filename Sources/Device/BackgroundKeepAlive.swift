@@ -316,10 +316,10 @@ final class BackgroundKeepAlive: ObservableObject {
     /// "Installing Dynamic Lyrics · 60%" style line shown under the song title.
     private func installSubtitle() -> String {
         let q = InstallQueue.shared
-        if q.isRunning { return q.summary }
+        if q.isRunning { return q.compact }
         let n = NativeInstaller.shared
-        if n.isActive, let j = n.job { return "Installing \(j.name) · \(Int((min(max(n.progress, 0), 1) * 100).rounded()))%" }
-        return "AirShare is working"
+        if n.isActive { return "Installing \(Int((min(max(n.progress, 0), 1) * 100).rounded()))%" }
+        return "AirShare"
     }
 
     private func userPause() {

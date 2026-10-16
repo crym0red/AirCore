@@ -390,7 +390,25 @@ nonisolated enum Signer {
         return try await signDetached(ipaURL: ipaURL, material: material, options: o, onLog: onLog)
     }
 
+    /// Same IPA + same certificate + same options → reuse the previous signed build (a file copy instead of a full sign).
     nonisolated static func signDetached(
+        ipaURL: URL,
+        material: CertMaterial,
+        options o: SignOptions,
+        onLog: (@Sendable (String) -> Void)? = nil,
+        captureOutput: Bool = true
+    ) async throws -> SignOutcome {
+        let cacheKey = SignCache.key(ipa: ipaURL, material: material, options: o)
+        if let k = cacheKey, let hit = SignCache.lookup(k) {
+            onLog?(">>> Same IPA, certificate and options as before — using the cached signed build (instant)")
+            return hit
+        }
+        let outcome = try await signDetachedUncached(ipaURL: ipaURL, material: material, options: o, onLog: onLog, captureOutput: captureOutput)
+        if let k = cacheKey { SignCache.store(k, outcome: outcome) }      // APFS clone: instant, and must finish before the caller moves the file
+        return outcome
+    }
+
+    nonisolated static func signDetachedUncached(
         ipaURL: URL,
         material: CertMaterial,
         options o: SignOptions,

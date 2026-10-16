@@ -1213,6 +1213,7 @@ struct AppDetailSheet: View {
         }
         .background(Color.black.ignoresSafeArea())
         .onAppear { selectedID = group.latest.id; refreshDevice() }
+        .task { await IPADownloader.prefetch(group.latest) }     // connection + screenshots ready before you tap Download
         .task {
             await AppStatsStore.shared.reportView(bundle: group.latest.bundle)
             await AppStatsStore.shared.refresh(force: true)
@@ -1280,23 +1281,42 @@ struct AppDetailSheet: View {
 
     private func versionRow(_ v: SourceApp) -> some View {
         let sel = v.id == selectedID
-        return Button { selectedID = v.id } label: {
-            HStack(spacing: 14) {
-                Circle().fill(sel ? blue : Theme.subtle.opacity(0.4)).frame(width: 10, height: 10)
+        let has = IPAInbox.has(v)
+        let busy = downloading && sel
+        return HStack(spacing: 14) {
+            // Download for THIS version lives here: arrow → live ring → checkmark.
+            Button {
+                selectedID = v.id
+                if !has && !downloading { Task { await download(v) } }
+            } label: {
+                ZStack {
+                    if busy {
+                        Circle().stroke(blue.opacity(0.25), lineWidth: 3)
+                        Circle().trim(from: 0, to: max(0.04, progress)).stroke(blue, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
+                    } else {
+                        Image(systemName: has ? "checkmark.circle.fill" : "arrow.down.circle").font(.system(size: 28)).foregroundStyle(blue)
+                    }
+                }
+                .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .disabled(downloading || v.downloadURL == nil)
+
+            HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("v\(v.version)").font(.system(size: 17, weight: .bold)).foregroundStyle(Theme.text)
-                    Text("\(v.sizeMB)  \(ageText(v.updated))").font(.system(size: 13)).foregroundStyle(Theme.subtle)
+                    Text(busy ? "Downloading \(Int(progress * 100))%" : "\(v.sizeMB)  \(ageText(v.updated))").font(.system(size: 13)).foregroundStyle(Theme.subtle).monospacedDigit()
                 }
                 Spacer()
-                if IPAInbox.has(v) { Image(systemName: "internaldrive.fill").font(.system(size: 14)).foregroundStyle(.green) }
                 if sel { Image(systemName: "checkmark").font(.system(size: 16, weight: .bold)).foregroundStyle(blue) }
             }
-            .padding(12)
-            .background(sel ? Theme.accent.opacity(0.12) : Color(white: 0.09))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(sel ? blue.opacity(0.35) : Theme.stroke, lineWidth: 1))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .contentShape(Rectangle())
+            .onTapGesture { selectedID = v.id }
         }
-        .buttonStyle(.plain)
+        .padding(12)
+        .background(sel ? Theme.accent.opacity(0.12) : Color(white: 0.09))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(sel ? blue.opacity(0.35) : Theme.stroke, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     private var serverDownloadCard: some View {
@@ -1326,41 +1346,22 @@ struct AppDetailSheet: View {
     }
 
     private var bottomBar: some View {
-        HStack {
-            Button { Task { await download() } } label: {
-                VStack(spacing: 4) {
-                    if downloading {
-                        ZStack {
-                            Circle().stroke(blue.opacity(0.25), lineWidth: 3)
-                            Circle().trim(from: 0, to: max(0.04, progress)).stroke(blue, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
-                        }
-                        .frame(width: 26, height: 26)
-                    }
-                    else if onDevice { Image(systemName: "checkmark.circle.fill").font(.system(size: 26)) }
-                    else { Image(systemName: "arrow.down.circle").font(.system(size: 26)) }
-                    Text(downloading ? "\(Int(progress * 100))%" : (onDevice ? "Downloaded" : "Download")).font(.system(size: 13, weight: .semibold)).monospacedDigit()
-                }
-                .foregroundStyle(blue).frame(width: 100)
-            }
-            .disabled(downloading || app.downloadURL == nil)
-            Spacer()
-            VStack(spacing: 2) {
-                Text("MRZefv").font(.system(size: 14, weight: .bold)).foregroundStyle(.orange).lineLimit(1)
-                Text("Powered by \((source.url.host ?? source.name).uppercased())").font(.system(size: 9, weight: .semibold)).foregroundStyle(blue).lineLimit(1).minimumScaleFactor(0.7)
-            }
-            .frame(maxWidth: .infinity)
-            Spacer()
+        HStack(spacing: 8) {
             Button {
                 InstallQueue.shared.enqueue(app); dismiss()
             } label: {
                 VStack(spacing: 4) {
                     Image(systemName: "bolt.fill").font(.system(size: 26))
-                    Text("Auto Install").font(.system(size: 13, weight: .semibold))
+                    Text("Auto Install").font(.system(size: 13, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
                 }
                 .foregroundStyle(app.downloadURL == nil ? Theme.subtle : blue).frame(width: 100)
             }
             .disabled(app.downloadURL == nil)
-            Spacer()
+            VStack(spacing: 2) {
+                Text("MRZefv").font(.system(size: 14, weight: .bold)).foregroundStyle(.orange).lineLimit(1)
+                Text("Powered by \((source.url.host ?? source.name).uppercased())").font(.system(size: 9, weight: .semibold)).foregroundStyle(blue).lineLimit(1).minimumScaleFactor(0.6)
+            }
+            .frame(maxWidth: .infinity)
             Button {
                 dismiss(); SignQueue.shared.enqueue(IPAInbox.url(for: app))
             } label: {
@@ -1376,12 +1377,13 @@ struct AppDetailSheet: View {
         .overlay(Rectangle().fill(Theme.stroke).frame(height: 1), alignment: .top)
     }
 
-    private func download() async {
+    private func download(_ target: SourceApp? = nil) async {
+        let app = target ?? self.app
         downloading = true; error = nil; progress = 0
         do {
             _ = try await IPADownloader.shared.download(app) { p in Task { @MainActor in progress = p } }
             await IPAInbox.storeIcon(for: app)
-            onDevice = true; progress = 1
+            onDevice = IPAInbox.has(self.app); progress = 1
             AppStatsStore.shared.noteDownload(app)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         } catch { self.error = error.localizedDescription }
