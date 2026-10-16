@@ -272,9 +272,16 @@ nonisolated enum ZipFast {
 
     private static func dos(_ d: Date) -> (date: UInt16, time: UInt16) {
         let c = Calendar(identifier: .gregorian).dateComponents(in: .current, from: d)
-        let year = max(1980, c.year ?? 1980)
-        let date = UInt16(((year - 1980) << 9) | ((c.month ?? 1) << 5) | (c.day ?? 1))
-        let time = UInt16(((c.hour ?? 0) << 11) | ((c.minute ?? 0) << 5) | ((c.second ?? 0) / 2))
+        let year: Int = max(1980, c.year ?? 1980)
+        let month: Int = c.month ?? 1
+        let day: Int = c.day ?? 1
+        let hour: Int = c.hour ?? 0
+        let minute: Int = c.minute ?? 0
+        let second: Int = (c.second ?? 0) / 2
+        let dateBits: Int = ((year - 1980) << 9) | (month << 5) | day
+        let timeBits: Int = (hour << 11) | (minute << 5) | second
+        let date = UInt16(truncatingIfNeeded: dateBits)
+        let time = UInt16(truncatingIfNeeded: timeBits)
         return (date, time)
     }
 
