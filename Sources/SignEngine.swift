@@ -821,7 +821,56 @@ nonisolated struct IPAMeta: Sendable {
     var version: String
     var iconPNG: Data?
 
+    /// Reads Info.plist and the icon straight out of the zip (milliseconds, no unpacking).
+    /// Throws for anything unusual so `read` can fall back to the full unpack.
+    static func readFast(_ ipa: URL) throws -> IPAMeta {
+        let entries = try ZipDelta.entries(of: ipa)
+        guard let plistEntry = entries.first(where: { e in
+            let parts = e.name.split(separator: "/", omittingEmptySubsequences: true)
+            return parts.count == 3 && parts[0] == "Payload" && parts[1].hasSuffix(".app") && parts[2] == "Info.plist"
+        }) else { throw ZipDelta.Failure("No Info.plist at the app root.") }
+        let appPrefix = String(plistEntry.name.dropLast("Info.plist".count))   // "Payload/X.app/"
+        let appFolder = String(plistEntry.name.split(separator: "/")[1])
+        let handle = try FileHandle(forReadingFrom: ipa)
+        defer { try? handle.close() }
+        let plistData = try ZipFast.read(plistEntry, from: handle)
+        guard let info = try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
+            throw ZipDelta.Failure("Unreadable Info.plist.")
+        }
+        let name = (info["CFBundleDisplayName"] as? String)
+            ?? (info["CFBundleName"] as? String)
+            ?? (appFolder as NSString).deletingPathExtension
+        let bundleID = (info["CFBundleIdentifier"] as? String) ?? "unknown.bundle.id"
+        let version = (info["CFBundleShortVersionString"] as? String)
+            ?? (info["CFBundleVersion"] as? String) ?? "1.0"
+
+        var declared: [String] = []
+        for key in ["CFBundleIcons", "CFBundleIcons~ipad"] {
+            if let icons = info[key] as? [String: Any],
+               let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+               let files = primary["CFBundleIconFiles"] as? [String] { declared += files.reversed() }
+        }
+        if declared.isEmpty, let files = info["CFBundleIconFiles"] as? [String] { declared = files.reversed() }
+        let pngs = entries.filter { e in
+            guard e.name.hasPrefix(appPrefix), e.name.lowercased().hasSuffix(".png") else { return false }
+            return !e.name.dropFirst(appPrefix.count).contains("/")
+        }
+        var pick: ZipDelta.Entry?
+        for base in declared {
+            let hits = pngs.filter { ($0.name as NSString).lastPathComponent.hasPrefix(base) }
+            if let best = hits.max(by: { $0.uncomp < $1.uncomp }) { pick = best; break }
+        }
+        if pick == nil {
+            let iconish = pngs.filter { $0.name.localizedCaseInsensitiveContains("icon") }
+            pick = (iconish.isEmpty ? pngs : iconish).max(by: { $0.uncomp < $1.uncomp })
+        }
+        var icon: Data?
+        if let pick { icon = try? ZipFast.read(pick, from: handle) }
+        return IPAMeta(name: name, bundleID: bundleID, version: version, iconPNG: icon)
+    }
+
     static func read(_ ipa: URL) throws -> IPAMeta {
+        if let fast = try? readFast(ipa) { return fast }
         let fm = FileManager.default
         let work = fm.temporaryDirectory.appendingPathComponent("meta-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: work, withIntermediateDirectories: true)

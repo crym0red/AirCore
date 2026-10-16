@@ -27,23 +27,16 @@ struct DirExporter: UIViewControllerRepresentable {
 /// The theme controls live in Settings › Appearance; the title bar intentionally has no palette button.
 /// `center` renders a centered subtitle (AirShare-style "57 Apps") behind the leading title.
 struct TabTitleBar<Trailing: View>: View {
-    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     let title: String
     var center: String? = nil            // second-row caption, e.g. "3 Apps"
-    var custom: AnyView? = nil           // replaces the centered title text (e.g. icon + tappable name)
     @ViewBuilder var trailing: Trailing
     var body: some View {
         VStack(spacing: 0) {
             // Row 1: palette · title (centered) · tab actions
             ZStack {
-                if let custom {
-                    custom.frame(maxWidth: .infinity).padding(.horizontal, 56)
-                } else {
-                    Text(title).font(.system(size: 20, weight: .bold)).foregroundStyle(Theme.text).lineLimit(1)
-                        .frame(maxWidth: .infinity).padding(.horizontal, 90)
-                }
+                Text(title).font(.system(size: 20, weight: .bold)).foregroundStyle(Theme.text).lineLimit(1)
+                    .frame(maxWidth: .infinity).padding(.horizontal, 90)
                 HStack(spacing: 10) {
-                    ThemePaletteButton()
                     Spacer()
                     trailing
                 }
@@ -72,8 +65,9 @@ struct AirShareRow: View {
     let subtitle: String        // "1.0 • com.mrzefv.unzipdrop"
     let badge: String           // "Signed 2h ago" / "Downloaded"
     var badgeAccented: Bool = false      // tinted pill (AirShare uses it for TrollStore)
+    var updatePill: String? = nil        // "1.0 → 1.2": shown next to the badge when a newer version exists
     var busy: Bool = false
-    var accent: Color = Theme.accent
+    var accent: Color = Color(red: 0.25, green: 0.55, blue: 1.0)
     let onAction: () -> Void
     let onTap: () -> Void
 
@@ -83,12 +77,22 @@ struct AirShareRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title).font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.text).lineLimit(1)
                 Text(subtitle).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.subtle).lineLimit(1).truncationMode(.middle)
-                Text(badge).font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(badgeAccented ? accent : Theme.subtle)
-                    .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(badgeAccented ? accent.opacity(0.14) : Color.white.opacity(0.06))
-                    .overlay(Capsule().stroke(badgeAccented ? accent.opacity(0.32) : .clear, lineWidth: 1))
-                    .clipShape(Capsule())
+                HStack(spacing: 6) {
+                    Text(badge).font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(badgeAccented ? accent : Theme.subtle)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(badgeAccented ? accent.opacity(0.14) : Color.white.opacity(0.06))
+                        .overlay(Capsule().stroke(badgeAccented ? accent.opacity(0.32) : .clear, lineWidth: 1))
+                        .clipShape(Capsule())
+                    if let updatePill {
+                        Text(updatePill).font(.system(size: 11, weight: .bold)).lineLimit(1)
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(Color.orange.opacity(0.16))
+                            .overlay(Capsule().stroke(Color.orange.opacity(0.5), lineWidth: 1))
+                            .clipShape(Capsule())
+                    }
+                }
             }
             Spacer(minLength: 8)
             if busy { ProgressView().tint(accent) }
@@ -196,16 +200,3 @@ struct TopBar: View {
 
 /// Identifiable URL wrapper for .sheet(item:).
 struct URLItem: Identifiable { let url: URL; var id: String { url.path } }
-
-// MARK: - Phone icon (the iPhone render used in onboarding)
-
-struct PhoneIcon: View {
-    var height: CGFloat = 30
-    var body: some View {
-        if UIImage(named: "iphone_render") != nil {
-            Image("iphone_render").resizable().scaledToFit().frame(height: height)
-        } else {
-            Image(systemName: "iphone.gen3").font(.system(size: height * 0.6, weight: .semibold)).foregroundStyle(Theme.accent)
-        }
-    }
-}

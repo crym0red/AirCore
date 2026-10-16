@@ -41,42 +41,10 @@ struct RootView: View {
         }
         .id(theme.revision)                                   // re-skin every tab on a theme change
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(TouchProbe().frame(width: 0, height: 0))   // passive finger tracking for particles/grid (never blocks touches)
         .overlay(ThemeBackgroundLayer())                      // particle/grid network floats over the tab content
-        .overlay(alignment: .topTrailing) {                   // user dropdown (account chip → panel)
-            if account.panelShown {
-                ZStack(alignment: .topTrailing) {
-                    Color.black.opacity(0.35).ignoresSafeArea()
-                        .onTapGesture { account.panelShown = false }
-                    AccountDropdown()
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Theme.stroke, lineWidth: 1))
-                        .shadow(color: .black.opacity(0.5), radius: 20, y: 8)
-                        .padding(.top, 100).padding(.trailing, 14)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-            }
-        }
-        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: account.panelShown)
-        .overlay(alignment: .topLeading) {                    // theme palette dropdown (top bar, left)
-            if theme.panelShown {
-                ZStack(alignment: .topLeading) {
-                    Color.black.opacity(0.35).ignoresSafeArea()
-                        .onTapGesture { theme.panelShown = false }
-                    ThemePanel()
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.stroke, lineWidth: 1))
-                        .shadow(color: .black.opacity(0.5), radius: 18, y: 8)
-                        .padding(.top, 62).padding(.leading, 12)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-            }
-        }
-        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: theme.panelShown)
 
         .task {
-            theme.startCycleIfNeeded()
-            await account.autoLoginIfNeeded()          // recognized ADID + device key → signed in, no password
+            Task { _ = await LibraryCache.shared.refresh() }   // Library is ready before you open it
             await SourceStore.shared.warmUpAtLaunch()
             WidgetDataManager.shared.refresh()
             _ = await PortalStorage.cleanupStaleTemporaryFiles()
@@ -188,7 +156,6 @@ extension View {
 
 private struct TabBar: View {
     @Binding var selected: Int
-    @ObservedObject private var liveTheme = AppTheme.shared   // tab bar recolors live with auto-cycle
     private let tabs: [(label: String, icon: String)] = [
         ("Browse",   "square.grid.3x3.fill"),
         ("Library",  "square.grid.2x2.fill"),

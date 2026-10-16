@@ -8,10 +8,10 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct LibraryView: View {
-    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @ObservedObject private var ota = OTAInstaller.shared
-    @State private var items: [LibraryItem] = []
-    @State private var loading = true
+    @ObservedObject private var store = SourceStore.shared   // re-renders the update pills as sources load
+    @State private var items: [LibraryItem]
+    @State private var loading: Bool
     @State private var search = ""
     @State private var importing = false
     @State private var installing: String?
@@ -20,7 +20,26 @@ struct LibraryView: View {
     @State private var showSearch = false
     @State private var confirmDeleteAll = false
 
+    init() {
+        // Whatever was loaded last time shows on the very first frame — the tab opens instantly.
+        let cached = LibraryCache.shared.items
+        _items = State(initialValue: cached ?? [])
+        _loading = State(initialValue: cached == nil)
+    }
+
     private var inbox: URL { AppPaths.dir("inbox") }
+
+    /// Newest version of this app found in any of your sources, if it's newer than the downloaded one.
+    private func newestVersion(for it: LibraryItem) -> String? {
+        var best: String?
+        for (_, repo) in store.allCached() {
+            guard let v = repo.group(bundle: it.bundle)?.latest.version,
+                  VersionCompare.isNewer(remote: v, than: it.version) else { continue }
+            if let b = best, !VersionCompare.isNewer(remote: v, than: b) { continue }
+            best = v
+        }
+        return best
+    }
 
     private var filtered: [LibraryItem] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -47,6 +66,7 @@ struct LibraryView: View {
                                 title: it.name,
                                 subtitle: "\(it.version) • \(it.bundle)",
                                 badge: "Downloaded",
+                                updatePill: newestVersion(for: it).map { "\(it.version) → \($0)" },
                                 busy: installing == it.id,
                                 accent: SSTheme.tintColor,
                                 onAction: { sheetItem = it },
@@ -138,27 +158,9 @@ struct LibraryView: View {
     // MARK: - Data
 
     private func reload() async {
-        loading = true
-        let dir = inbox
-        let list: [LibraryItem] = await Task.detached { () -> [LibraryItem] in
-            let fm = FileManager.default
-            guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])
-                .filter({ $0.pathExtension.lowercased() == "ipa" }) else { return [] }
-            let sorted = files.sorted {
-                let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                return a > b
-            }
-            return sorted.compactMap { u in
-                let size = (try? fm.attributesOfItem(atPath: u.path)[.size] as? Int64) ?? 0
-                if let m = try? IPAMeta.read(u) {
-                    return LibraryItem(id: u.path, url: u, name: m.name, bundle: m.bundleID, version: m.version, sizeBytes: size, icon: m.iconPNG)
-                }
-                let base = u.deletingPathExtension().lastPathComponent
-                return LibraryItem(id: u.path, url: u, name: base, bundle: "—", version: "—", sizeBytes: size, icon: nil)
-            }
-        }.value
-        items = list
+        loading = LibraryCache.shared.items == nil
+        let list = await LibraryCache.shared.refresh()
+        if list != items { items = list }
         loading = false
     }
 
@@ -174,11 +176,13 @@ struct LibraryView: View {
 
     private func delete(_ it: LibraryItem) {
         try? FileManager.default.removeItem(at: it.url)
+        LibraryCache.shared.remove(id: it.id)
         items.removeAll { $0.id == it.id }
     }
 
     private func deleteAll() {
         for it in items { try? FileManager.default.removeItem(at: it.url) }
+        LibraryCache.shared.removeAll()
         items.removeAll()
         search = ""; showSearch = false
     }
@@ -195,7 +199,7 @@ struct LibraryView: View {
 
 // MARK: - Library item (on-disk IPA in the inbox)
 
-struct LibraryItem: Identifiable, Equatable {
+nonisolated struct LibraryItem: Identifiable, Equatable, Sendable {
     let id: String            // file path
     let url: URL
     let name: String
@@ -204,4 +208,71 @@ struct LibraryItem: Identifiable, Equatable {
     let sizeBytes: Int64
     let icon: Data?
     var sizeString: String { sizeBytes > 0 ? ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file) : "" }
+}
+
+
+// MARK: - Library cache (keeps the list in memory so the tab opens instantly)
+
+nonisolated struct LibraryStamp: Equatable, Sendable {
+    let size: Int64
+    let mtime: Date
+}
+
+@MainActor
+final class LibraryCache {
+    static let shared = LibraryCache()
+    private(set) var items: [LibraryItem]?
+    private var memo: [String: LibraryItem] = [:]
+    private var stamps: [String: LibraryStamp] = [:]
+    private var running: Task<Void, Never>?
+
+    /// Rescans the inbox. Files that haven't changed reuse what was read last time, so only new IPAs are opened.
+    @discardableResult
+    func refresh() async -> [LibraryItem] {
+        if let running { await running.value; return items ?? [] }
+        let dir = AppPaths.dir("inbox")
+        let oldItems = memo, oldStamps = stamps
+        let work = Task { @MainActor in
+            let result = await Task.detached(priority: .userInitiated) { () -> ([LibraryItem], [String: LibraryStamp]) in
+                let fm = FileManager.default
+                let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
+                guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: Array(keys))
+                    .filter({ $0.pathExtension.lowercased() == "ipa" }) else { return ([], [:]) }
+                var out: [(Date, LibraryItem)] = []
+                var newStamps: [String: LibraryStamp] = [:]
+                for u in files {
+                    let v = try? u.resourceValues(forKeys: keys)
+                    let stamp = LibraryStamp(size: Int64(v?.fileSize ?? 0), mtime: v?.contentModificationDate ?? .distantPast)
+                    newStamps[u.path] = stamp
+                    if let item = oldItems[u.path], oldStamps[u.path] == stamp { out.append((stamp.mtime, item)); continue }
+                    let item: LibraryItem
+                    if let m = try? IPAMeta.read(u) {
+                        item = LibraryItem(id: u.path, url: u, name: m.name, bundle: m.bundleID, version: m.version, sizeBytes: stamp.size, icon: m.iconPNG)
+                    } else {
+                        let base = u.deletingPathExtension().lastPathComponent
+                        item = LibraryItem(id: u.path, url: u, name: base, bundle: "—", version: "—", sizeBytes: stamp.size, icon: nil)
+                    }
+                    out.append((stamp.mtime, item))
+                }
+                out.sort { $0.0 > $1.0 }
+                return (out.map { $0.1 }, newStamps)
+            }.value
+            items = result.0
+            stamps = result.1
+            memo = Dictionary(uniqueKeysWithValues: result.0.map { ($0.id, $0) })
+        }
+        running = work
+        await work.value
+        running = nil
+        return items ?? []
+    }
+
+    func remove(id: String) {
+        items?.removeAll { $0.id == id }
+        memo[id] = nil; stamps[id] = nil
+    }
+
+    func removeAll() {
+        items = []; memo = [:]; stamps = [:]
+    }
 }

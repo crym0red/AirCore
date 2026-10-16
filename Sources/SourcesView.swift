@@ -20,6 +20,10 @@ nonisolated struct RepoSource: Codable, Identifiable, Equatable, Hashable, Senda
     var author: String?
     var appCount: Int?
     var lastFetched: Date?
+
+    /// The built-in AirShare source is locked: it can't be removed or reordered.
+    static let lockedID = "airshare"
+    var isLocked: Bool { id == Self.lockedID }
 }
 
 nonisolated struct SourceApp: Identifiable, Equatable, Sendable, Codable {
@@ -291,17 +295,26 @@ final class SourceStore: ObservableObject {
     private var prefetchingIDs: Set<String> = []
 
     static let defaults: [RepoSource] = [
-        RepoSource(id: "delvek", name: "DELvEK", url: URL(string: "https://delvek.net/repo.json")!,
-                   iconURL: nil, description: "Trusted IPA Daily Uploads!", author: "MRzefv"),
         RepoSource(id: "airshare", name: "AirShare", url: URL(string: "https://airshare.lol/air.json")!,
                    iconURL: nil, description: "AirShare catalog", author: "AirShare"),
     ]
 
     private init() {
+        var list: [RepoSource]
         if let d = try? Data(contentsOf: fileURL), let l = try? JSONDecoder().decode([RepoSource].self, from: d), !l.isEmpty {
-            sources = l
+            list = l
         } else {
-            sources = Self.defaults; save()
+            list = Self.defaults
+        }
+        // DELvEK is retired from the default sources; AirShare is always present, first and locked.
+        let retired = list.filter { $0.id == "delvek" || $0.url.host == "delvek.net" }
+        list.removeAll { $0.id == "delvek" || $0.url.host == "delvek.net" }
+        if !list.contains(where: { $0.isLocked }) { list.insert(contentsOf: Self.defaults, at: 0) }
+        sources = list
+        save()
+        for r in retired {
+            try? FileManager.default.removeItem(at: Self.rawCacheURL(r.id))
+            try? FileManager.default.removeItem(at: Self.indexCacheURL(r.id))
         }
     }
 
@@ -399,6 +412,7 @@ final class SourceStore: ObservableObject {
     }
 
     func add(_ s: RepoSource) {
+        if sources.contains(where: { $0.isLocked && $0.url == s.url }) { return }   // already built in
         let replacedIDs = sources.filter { $0.url == s.url }.map(\.id)
         replacedIDs.forEach { parsedCache.removeValue(forKey: $0) }
         sources.removeAll { $0.url == s.url }
@@ -414,11 +428,18 @@ final class SourceStore: ObservableObject {
         }
     }
     func remove(_ s: RepoSource) {
+        guard !s.isLocked else { return }
         sources.removeAll { $0.id == s.id }; parsedCache.removeValue(forKey: s.id); save()
         try? FileManager.default.removeItem(at: Self.rawCacheURL(s.id))
         try? FileManager.default.removeItem(at: Self.indexCacheURL(s.id))
     }
-    func move(from: IndexSet, to: Int) { sources.move(fromOffsets: from, toOffset: to); save() }
+    func move(from: IndexSet, to: Int) {
+        guard !from.contains(where: { sources.indices.contains($0) && sources[$0].isLocked }) else { return }
+        sources.move(fromOffsets: from, toOffset: to)
+        // AirShare stays on top.
+        if let i = sources.firstIndex(where: { $0.isLocked }), i != 0 { sources.insert(sources.remove(at: i), at: 0) }
+        save()
+    }
     private func save() { try? JSONEncoder().encode(sources).write(to: fileURL) }
     func cachedParsedRepo(for source: RepoSource) -> RepoParser.ParsedRepo? { parsedCache[source.id] }
     /// In-memory copy if there is one, otherwise the on-disk copy (loaded off the main thread). Never touches the network.
@@ -549,9 +570,13 @@ struct SourcesView: View {
                             .listRowBackground(Color.black)
                             .listRowSeparatorTint(Theme.stroke)
                             .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-                            .swipeActions { Button(role: .destructive) { store.remove(s) } label: { Label("Remove", systemImage: "trash") } }
+                            .swipeActions {
+                                if !s.isLocked { Button(role: .destructive) { store.remove(s) } label: { Label("Remove", systemImage: "trash") } }
+                            }
+                            .deleteDisabled(s.isLocked)
+                            .moveDisabled(s.isLocked)
                     }
-                    .onDelete { idx in idx.map { store.sources[$0] }.forEach(store.remove) }
+                    .onDelete { idx in idx.map { store.sources[$0] }.filter { !$0.isLocked }.forEach(store.remove) }
                     .onMove { store.move(from: $0, to: $1) }
                     }
                 }
@@ -616,7 +641,10 @@ struct SourcesView: View {
         HStack(spacing: 14) {
             SourceIcon(url: s.iconURL, side: 54, fallback: s.name)
             VStack(alignment: .leading, spacing: 4) {
-                Text(s.name).font(.system(size: 19, weight: .bold)).foregroundStyle(Theme.text).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(s.name).font(.system(size: 19, weight: .bold)).foregroundStyle(Theme.text).lineLimit(1)
+                    if s.isLocked { Image(systemName: "lock.fill").font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.accent) }
+                }
                 Text(s.description.isEmpty ? s.url.host ?? s.url.absoluteString : s.description)
                     .font(.system(size: 13)).foregroundStyle(Theme.subtle).lineLimit(1)
                 if let a = s.author, !a.isEmpty {
@@ -837,18 +865,6 @@ private struct SourceDetailScreen: View {
     private var countBar: some View {
         HStack(spacing: 8) {
             Text("\(groups.count.formatted()) Apps").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.text).lineLimit(1)
-            if !updatable.isEmpty {
-                Button { Task { await updateAll() } } label: {
-                    HStack(spacing: 4) {
-                        if updatingAll { ProgressView().tint(.black).scaleEffect(0.7) } else { Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 10, weight: .heavy)) }
-                        Text("UPDATE ALL (\(updatable.count))").font(.system(size: 10, weight: .heavy, design: .monospaced)).kerning(0.5)
-                    }
-                    .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(Theme.accent).foregroundStyle(.black).clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(updatingAll || downloading != nil)
-            }
             Spacer(minLength: 6)
             AccountChip()
         }

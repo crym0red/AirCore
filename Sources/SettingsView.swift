@@ -657,17 +657,12 @@ private struct AboutScreen: View {
         DetailScreen(title: "About") {
             VStack(spacing: 0) {
                 // App icon · name · version | iOS
-                Group {
-                    if UIImage(named: "airshare_logo") != nil {
-                        Image("airshare_logo").resizable().scaledToFill()
-                    } else {
-                        ZStack { Theme.accent; Image(systemName: "archivebox.fill").font(.system(size: 44, weight: .bold)).foregroundStyle(.black) }
-                    }
-                }
-                .frame(width: 120, height: 120)
-                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                .shadow(color: Theme.accent.opacity(0.35), radius: 22)
-                .padding(.top, 18)
+                // AirCore logo: transparent, no tile behind it — it just floats with a soft glow.
+                Image("aircore_logo")
+                    .resizable().scaledToFit()
+                    .frame(width: 130, height: 130)
+                    .shadow(color: Theme.accent.opacity(0.55), radius: 18)
+                    .padding(.top, 18)
 
                 Text(Theme.appName).font(.system(size: 34, weight: .bold)).foregroundStyle(Theme.text).padding(.top, 18)
                 HStack(spacing: 10) {

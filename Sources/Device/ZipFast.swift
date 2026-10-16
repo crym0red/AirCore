@@ -89,6 +89,15 @@ nonisolated enum ZipFast {
         if let firstError { throw firstError }
     }
 
+    /// Uncompressed bytes of one small entry (Info.plist, an icon…) without unpacking anything else.
+    static func read(_ e: ZipDelta.Entry, from h: FileHandle, limit: UInt32 = 8_000_000) throws -> Data {
+        guard e.uncomp <= limit, e.flags & 0x1 == 0, e.method == 0 || e.method == 8 else { throw Failure("Can't read \(e.name)") }
+        var out = Data()
+        let start = try ZipDelta.dataOffset(of: e, in: h)
+        try readEntry(e, from: h, dataStart: start) { out.append($0) }
+        return out
+    }
+
     private static func extractOne(_ e: ZipDelta.Entry, from h: FileHandle, path: String) throws {
         guard e.flags & 0x1 == 0, e.method == 0 || e.method == 8 else { throw Failure("Unsupported zip entry: \(e.name)") }
         let mode = (e.extAttr >> 16) & 0xFFFF
