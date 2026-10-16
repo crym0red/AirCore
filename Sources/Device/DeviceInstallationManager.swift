@@ -71,8 +71,12 @@ final class DeviceInstallationManager: ObservableObject {
     func retainWorkflow(_ id: UUID) {
         vpnReconnect.beginDeviceWork()
         workflows.insert(id)
+        BackgroundKeepAlive.shared.start(id.uuidString)     // keeps AirShare alive if you leave the app
     }
-    func releaseWorkflow(_ id: UUID) { workflows.remove(id); cleanUpIfIdle() }
+    func releaseWorkflow(_ id: UUID) {
+        workflows.remove(id); cleanUpIfIdle()
+        BackgroundKeepAlive.shared.stop(id.uuidString)
+    }
     var canReconnectVPN: Bool { pendingOperations == 0 && workflows.isEmpty && cleanupTask == nil }
 
     func testVPNReconnectShortcut() async {

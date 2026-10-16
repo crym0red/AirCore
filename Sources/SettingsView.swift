@@ -1726,6 +1726,10 @@ private struct NativeInstallScreen: View {
     @AppStorage(AppAutoUpdater.chargingOnlyKey) private var chargingOnly = false
     @AppStorage(AppAutoUpdater.certRefreshKey) private var certRefresh = false
     @AppStorage("AirShare.uploadChunkMB") private var chunkMB = 4
+    @AppStorage(BackgroundKeepAlive.enabledKey) private var keepAlive = true
+    @AppStorage(BackgroundKeepAlive.songTitleKey) private var songTitle = ""
+    @ObservedObject private var keepAliveEngine = BackgroundKeepAlive.shared
+    @State private var songError: String?
     @State private var confirmReset = false
     @Environment(\.dismiss) private var dismiss
 
@@ -1780,6 +1784,8 @@ private struct NativeInstallScreen: View {
                 if !linked || manager.setupNotice != nil || installer.job != nil { setupCard }
                 methodCard
                 chunkCard
+                keepAliveCard
+                songCard
                 actionGrid
                 lastInstallCard
                 tipCard
@@ -2084,6 +2090,68 @@ private struct NativeInstallScreen: View {
                 ForEach([1, 2, 4, 8, 16], id: \.self) { Text("\($0) MB").tag($0) }
             }
             .pickerStyle(.menu).tint(Theme.accent).disabled(busy)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(panel))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(hairline, lineWidth: 1))
+    }
+
+    private var songCard: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "music.note").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.accent)
+                .frame(width: 38, height: 38)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black.opacity(0.5)))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Install song").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                Text(songError ?? (songTitle.isEmpty ? "Pick a song to play while apps install"
+                                   : (keepAlive ? songTitle : "Turn on “Finish installs in background” to hear it")))
+                    .font(.system(size: 12)).foregroundStyle(songError == nil ? Theme.subtle : Color.red).lineLimit(2)
+            }
+            Spacer(minLength: 4)
+            if songTitle.isEmpty {
+                Button { chooseSong() } label: {
+                    Text("Choose").font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
+                        .padding(.horizontal, 12).padding(.vertical, 7).background(Theme.accent).clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            } else {
+                Menu {
+                    Button { keepAliveEngine.togglePreview() } label: {
+                        Label(keepAliveEngine.isPreviewing ? "Stop preview" : "Preview", systemImage: keepAliveEngine.isPreviewing ? "stop.fill" : "play.fill")
+                    }
+                    .disabled(keepAliveEngine.isHolding)
+                    Button { chooseSong() } label: { Label("Change song", systemImage: "arrow.triangle.2.circlepath") }
+                    Button(role: .destructive) { keepAliveEngine.removeSong(); songError = nil } label: { Label("Remove", systemImage: "trash") }
+                } label: {
+                    Image(systemName: "ellipsis.circle.fill").font(.system(size: 24)).foregroundStyle(Theme.accent)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(panel))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(hairline, lineWidth: 1))
+    }
+
+    private func chooseSong() {
+        DocumentPickerPresenter.pickAudio { url in
+            guard let url else { return }
+            do { try BackgroundKeepAlive.shared.setSong(from: url); songError = nil }
+            catch { songError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription }
+        }
+    }
+
+    private var keepAliveCard: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "moon.stars.fill").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.accent)
+                .frame(width: 38, height: 38)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black.opacity(0.5)))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Finish installs in background").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                Text("Leave AirShare mid-install. Progress shows as a notification.").font(.system(size: 12)).foregroundStyle(Theme.subtle)
+            }
+            Spacer(minLength: 4)
+            Toggle("", isOn: $keepAlive).labelsHidden().tint(Theme.accent)
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(panel))

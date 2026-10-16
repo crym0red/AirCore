@@ -19,6 +19,10 @@ enum DocumentPickerPresenter {
         present(types: types, multiple: false) { urls in onPicked(urls.first) }
     }
 
+    static func pickAudio(onPicked: @escaping (URL?) -> Void) {
+        present(types: [.audio], multiple: false) { urls in onPicked(urls.first) }
+    }
+
     static func pickFiles(onPicked: @escaping ([URL]) -> Void) {
         present(types: [.item], multiple: true, onPicked: onPicked)
     }

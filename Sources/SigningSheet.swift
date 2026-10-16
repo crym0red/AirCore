@@ -5457,6 +5457,18 @@ struct NativeInstallTile: View {
                 .foregroundStyle(failed != nil ? Color.red : (done ? Color(red: 0.2, green: 1.0, blue: 0.45) : .white.opacity(0.7)))
                 .multilineTextAlignment(.center)
             if !done && failed == nil {
+                if BackgroundKeepAlive.enabled {
+                    VStack(spacing: 4) {
+                        Label("You can leave AirShare", systemImage: "checkmark.shield.fill")
+                            .font(.system(size: 14, weight: .bold)).foregroundStyle(Color(red: 0.2, green: 1.0, blue: 0.45))
+                        Text("The install keeps going in the background and you'll get a notification when it's done.")
+                            .font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                    }
+                    .padding(12).frame(maxWidth: .infinity)
+                    .background(Color(red: 0.2, green: 1.0, blue: 0.45).opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .padding(.top, 4)
+                } else {
                 VStack(spacing: 4) {
                     Label("Keep AirShare open", systemImage: "exclamationmark.triangle.fill")
                         .font(.system(size: 14, weight: .bold)).foregroundStyle(Color(red: 1, green: 0.8, blue: 0.3))
@@ -5467,6 +5479,7 @@ struct NativeInstallTile: View {
                 .background(Color(red: 1, green: 0.8, blue: 0.3).opacity(0.1))
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .padding(.top, 4)
+                }
             }
         }
         .frame(maxWidth: .infinity)

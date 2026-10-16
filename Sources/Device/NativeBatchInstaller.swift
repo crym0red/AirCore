@@ -176,8 +176,13 @@ struct BatchInstallSheet: View {
             .background(Color.white.opacity(0.04)).clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
 
             if batch.isRunning {
-                Label("Keep AirShare open until every app is installed.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Color(red: 1, green: 0.8, blue: 0.3))
+                if BackgroundKeepAlive.enabled {
+                    Label("You can leave AirShare. Installs continue in the background.", systemImage: "checkmark.shield.fill")
+                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Color(red: 0.2, green: 1.0, blue: 0.45))
+                } else {
+                    Label("Keep AirShare open until every app is installed.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Color(red: 1, green: 0.8, blue: 0.3))
+                }
             } else if batch.failedCount > 0 {
                 Text(batch.items.compactMap { i -> String? in
                     if case .failed(let m) = i.status { return "\(i.entry.name): \(m)" }; return nil
