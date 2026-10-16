@@ -25,7 +25,7 @@ struct AirShareLiveActivityWidget: Widget {
             let s = context.state
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Image(systemName: s.symbol).font(.title2).foregroundStyle(tint(s))
+                    Image(systemName: s.symbol).font(.title2).foregroundStyle(stateColor(s))
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     Text("\(Int((s.progress * 100).rounded()))%").font(.title3.weight(.bold)).monospacedDigit()
@@ -35,23 +35,23 @@ struct AirShareLiveActivityWidget: Widget {
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(alignment: .leading, spacing: 6) {
-                        ProgressView(value: min(max(s.progress, 0), 1)).tint(tint(s))
+                        ProgressView(value: min(max(s.progress, 0), 1)).tint(stateColor(s))
                         Text(s.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
             } compactLeading: {
-                Image(systemName: s.symbol).foregroundStyle(tint(s))
+                Image(systemName: s.symbol).foregroundStyle(stateColor(s))
             } compactTrailing: {
                 Text("\(Int((s.progress * 100).rounded()))%").font(.caption2.weight(.bold)).monospacedDigit()
             } minimal: {
-                Image(systemName: s.symbol).foregroundStyle(tint(s))
+                Image(systemName: s.symbol).foregroundStyle(stateColor(s))
             }
         }
     }
 }
 
 @available(iOS 16.1, *)
-private func tint(_ s: AirShareActivityAttributes.ContentState) -> Color {
+private func stateColor(_ s: AirShareActivityAttributes.ContentState) -> Color {
     s.failed ? .orange : (s.finished ? .green : Color(red: 0.25, green: 0.6, blue: 1))
 }
 
@@ -60,14 +60,14 @@ private struct LockScreenView: View {
     let state: AirShareActivityAttributes.ContentState
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: state.symbol).font(.system(size: 26)).foregroundStyle(tint(state)).frame(width: 34)
+            Image(systemName: state.symbol).font(.system(size: 26)).foregroundStyle(stateColor(state)).frame(width: 34)
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(state.title).font(.system(size: 15, weight: .bold)).lineLimit(1)
                     Spacer()
                     Text("\(Int((state.progress * 100).rounded()))%").font(.system(size: 15, weight: .bold)).monospacedDigit()
                 }
-                ProgressView(value: min(max(state.progress, 0), 1)).tint(tint(state))
+                ProgressView(value: min(max(state.progress, 0), 1)).tint(stateColor(state))
                 Text(state.detail).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
             }
         }
