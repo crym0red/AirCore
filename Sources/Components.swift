@@ -29,13 +29,18 @@ struct DirExporter: UIViewControllerRepresentable {
 struct TabTitleBar<Trailing: View>: View {
     let title: String
     var center: String? = nil            // second-row caption, e.g. "3 Apps"
+    var custom: AnyView? = nil           // replaces the title text (e.g. Decrypt's bot picker)
     @ViewBuilder var trailing: Trailing
     var body: some View {
         VStack(spacing: 0) {
             // Row 1: palette · title (centered) · tab actions
             ZStack {
-                Text(title).font(.system(size: 20, weight: .bold)).foregroundStyle(Theme.text).lineLimit(1)
-                    .frame(maxWidth: .infinity).padding(.horizontal, 90)
+                if let custom {
+                    custom.frame(maxWidth: .infinity).padding(.horizontal, 90)
+                } else {
+                    Text(title).font(.system(size: 20, weight: .bold)).foregroundStyle(Theme.text).lineLimit(1)
+                        .frame(maxWidth: .infinity).padding(.horizontal, 90)
+                }
                 HStack(spacing: 10) {
                     Spacer()
                     trailing
