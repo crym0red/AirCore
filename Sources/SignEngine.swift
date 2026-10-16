@@ -869,7 +869,15 @@ nonisolated struct IPAMeta: Sendable {
         return IPAMeta(name: name, bundleID: bundleID, version: version, iconPNG: icon)
     }
 
+    /// Reads the IPA's metadata. An icon saved next to the IPA at download time (the source's custom icon) wins
+    /// over the icon packed inside the IPA.
     static func read(_ ipa: URL) throws -> IPAMeta {
+        var meta = try readCore(ipa)
+        if let d = try? Data(contentsOf: URL(fileURLWithPath: ipa.path + ".icon")), !d.isEmpty { meta.iconPNG = d }
+        return meta
+    }
+
+    private static func readCore(_ ipa: URL) throws -> IPAMeta {
         if let fast = try? readFast(ipa) { return fast }
         let fm = FileManager.default
         let work = fm.temporaryDirectory.appendingPathComponent("meta-\(UUID().uuidString)", isDirectory: true)

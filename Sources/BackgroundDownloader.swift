@@ -47,6 +47,8 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
     private var received: [String: [Int: Int64]] = [:]
     private var failures: [String: Error] = [:]
     private var eventDone: (() -> Void)?
+    private var expectedSingle: [String: Int64] = [:]
+    private var pollTimer: DispatchSourceTimer?
 
     override init() {
         super.init()
@@ -106,7 +108,7 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
     /// HEAD request: does the server accept byte ranges, and how big is the file?
     static func probeRanges(_ src: URL) async -> RangeProbe? {
         var req = request(for: src)
-        req.httpMethod = "HEAD"; req.timeoutInterval = 8
+        req.httpMethod = "HEAD"; req.timeoutInterval = 3
         guard let (_, resp) = try? await URLSession.shared.data(for: req), let h = resp as? HTTPURLResponse, h.statusCode == 200,
               (h.value(forHTTPHeaderField: "Accept-Ranges") ?? "").lowercased().contains("bytes"),
               h.expectedContentLength > 0 else { return nil }
@@ -155,6 +157,7 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<URL, Error>) in
                 let h: Handler = (progress, { c.resume(with: $0) })
                 lock.lock(); handlers[id, default: []].append(h); lock.unlock()
+                self.startPolling()
                 if let launch { self.launchTasks(launch) }
             }
         } onCancel: { self.cancel(id) }
@@ -171,7 +174,7 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
     /// Forget a job: cancel its tasks and delete its pieces.
     private func drop(_ id: String) {
         lock.lock()
-        jobs.removeValue(forKey: id); received.removeValue(forKey: id); failures.removeValue(forKey: id)
+        jobs.removeValue(forKey: id); received.removeValue(forKey: id); failures.removeValue(forKey: id); expectedSingle.removeValue(forKey: id)
         saveIndexLocked()
         lock.unlock()
         session.getAllTasks { tasks in
@@ -213,15 +216,62 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
             failures[t.id] = GitHubError.badConfig("Server ignored the byte range.")
             lock.unlock(); downloadTask.cancel(); return
         }
-        received[t.id, default: [:]][t.index] = totalBytesWritten
-        let done = job.parts.filter { $0.done }.reduce(Int64(0)) { $0 + ($1.hi - $1.lo + 1) }
-        let live = received[t.id]!.filter { k, _ in !(job.parts.first { $0.index == k }?.done ?? false) }.values.reduce(0, +)
-        let total = job.total > 0 ? job.total : totalBytesExpectedToWrite
-        let hs = handlers[t.id] ?? []
+        record(t.id, t.index, totalBytesWritten, expected: totalBytesExpectedToWrite)
+        lock.unlock()
+        emit(t.id)
+    }
+
+    /// Caller holds the lock.
+    private func record(_ id: String, _ index: Int, _ bytes: Int64, expected: Int64) {
+        var m = received[id] ?? [:]
+        m[index] = max(m[index] ?? 0, bytes)
+        received[id] = m
+        if expected > 0, (jobs[id]?.total ?? -1) <= 0 { expectedSingle[id] = expected }
+    }
+
+    /// Pushes the overall fraction to every listener of a job.
+    private func emit(_ id: String) {
+        lock.lock()
+        guard let job = jobs[id] else { lock.unlock(); return }
+        let sum = (received[id] ?? [:]).values.reduce(Int64(0), +)
+        let total = job.total > 0 ? job.total : (expectedSingle[id] ?? 0)
+        let hs = handlers[id] ?? []
         lock.unlock()
         guard total > 0 else { return }
-        let fraction = min(1, Double(done + live) / Double(total))
+        let fraction = min(1, Double(sum) / Double(total))
         for h in hs { h.progress(fraction) }
+    }
+
+    /// Background sessions batch their progress callbacks; polling the task counters keeps the bar smooth.
+    private func startPolling() {
+        lock.lock()
+        guard pollTimer == nil else { lock.unlock(); return }
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
+        pollTimer = timer
+        lock.unlock()
+        timer.schedule(deadline: .now() + 0.15, repeating: 0.2)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.lock.lock(); let idle = self.handlers.isEmpty; self.lock.unlock()
+            if idle { self.stopPolling(); return }
+            self.session.getAllTasks { tasks in
+                var touched = Set<String>()
+                self.lock.lock()
+                for t in tasks {
+                    guard let info = Self.parse(t), let job = self.jobs[info.id], job.gen == info.gen else { continue }
+                    self.record(info.id, info.index, t.countOfBytesReceived, expected: t.countOfBytesExpectedToReceive)
+                    touched.insert(info.id)
+                }
+                self.lock.unlock()
+                for id in touched { self.emit(id) }
+            }
+        }
+        timer.resume()
+    }
+
+    private func stopPolling() {
+        lock.lock(); let t = pollTimer; pollTimer = nil; lock.unlock()
+        t?.cancel()
     }
 
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
@@ -242,13 +292,16 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
             try? fm.removeItem(at: target)
             try fm.moveItem(at: location, to: target)       // must happen now; iOS deletes `location` after this returns
         } catch { lock.lock(); failures[t.id] = error; lock.unlock(); return }
+        let finalSize = (try? fm.attributesOfItem(atPath: target.path)[.size] as? Int64) ?? 0
         lock.lock()
+        record(t.id, t.index, finalSize, expected: finalSize)
         if var j = jobs[t.id], j.gen == t.gen, let k = j.parts.firstIndex(where: { $0.index == t.index }) {
             j.parts[k].done = true
             jobs[t.id] = j
             saveIndexLocked()
         }
         lock.unlock()
+        emit(t.id)
     }
 
     private func setFailure(_ id: String, _ message: String) {

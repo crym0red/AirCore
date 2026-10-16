@@ -266,7 +266,8 @@ nonisolated enum RepoParser {
             return "0"
         }()
         let icon = firstURL(a, ["iconURL", "iconUrl", "icon"])
-        let dl = firstURL(a, ["downloadURL", "downloadUrl", "url", "ipa", "ipaURL", "ipa_url"]) ?? firstURL(v0, ["downloadURL", "url"])
+        // The version-specific link (versions[0]) first: a bare /dl/<bundle> link can resolve to a different build.
+        let dl = firstURL(v0, ["downloadURL", "url"]) ?? firstURL(a, ["downloadURL", "downloadUrl", "url", "ipa", "ipaURL", "ipa_url"])
         let shots: [URL] = {
             if let arr = a["screenshots"] as? [String] { return arr.compactMap(URL.init(string:)) }
             if let arr = a["screenshotURLs"] as? [String] { return arr.compactMap(URL.init(string:)) }
@@ -1043,6 +1044,7 @@ private struct SourceDetailScreen: View {
         downloading = app.id; progress = 0; error = nil
         do {
             let dest = try await IPADownloader.shared.download(app) { p in Task { @MainActor in progress = p } }
+            await IPAInbox.storeIcon(for: app)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             AppStatsStore.shared.noteDownload(app)
             SignQueue.shared.enqueue(dest)
@@ -1082,6 +1084,14 @@ nonisolated enum IPAInbox {
         return AppPaths.dir("inbox").appendingPathComponent("\(safe)-\(app.version).ipa")
     }
     static func has(_ app: SourceApp) -> Bool { FileManager.default.fileExists(atPath: url(for: app).path) }
+    /// Saves the source's own (custom) icon next to the IPA so signing and the Library keep it.
+    static func storeIcon(for app: SourceApp) async {
+        guard let u = app.iconURL else { return }
+        let side = URL(fileURLWithPath: url(for: app).path + ".icon")
+        guard let (data, _) = try? await URLSession.shared.data(from: u), let img = UIImage(data: data),
+              let png = img.pngData() else { return }
+        try? png.write(to: side, options: .atomic)
+    }
     static func size(_ app: SourceApp) -> Int64 {
         (try? FileManager.default.attributesOfItem(atPath: url(for: app).path)[.size] as? Int64) ?? 0
     }
@@ -1107,7 +1117,7 @@ struct AppDetailSheet: View {
     @State private var onDevice = false
     @State private var error: String?
 
-    private let blue = Color(red: 0.25, green: 0.55, blue: 1.0)
+    private var blue: Color { Theme.accent }
 
     private var detailTitleBar: some View {
         ZStack {
@@ -1244,7 +1254,7 @@ struct AppDetailSheet: View {
                 if sel { Image(systemName: "checkmark").font(.system(size: 16, weight: .bold)).foregroundStyle(blue) }
             }
             .padding(12)
-            .background(sel ? Color(red: 0.06, green: 0.09, blue: 0.16) : Color(white: 0.09))
+            .background(sel ? Theme.accent.opacity(0.12) : Color(white: 0.09))
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(sel ? blue.opacity(0.35) : Theme.stroke, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 16))
         }
@@ -1266,7 +1276,7 @@ struct AppDetailSheet: View {
             }
             .frame(height: 8)
             VStack(alignment: .leading, spacing: 8) {
-                Label("Downloading to device…", systemImage: "arrow.down.square.fill").font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.subtle)
+                Label(progress > 0 ? "Downloading to device…" : "Connecting…", systemImage: "arrow.down.square.fill").font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.subtle)
                 Label(source.url.host ?? source.name, systemImage: "globe").font(.system(size: 13, design: .monospaced)).foregroundStyle(blue)
                 if onDevice {
                     Label("\(ByteCountFormatter.string(fromByteCount: IPAInbox.size(app), countStyle: .file)) on device — no re-download at sign", systemImage: "sdcard.fill")
@@ -1281,10 +1291,16 @@ struct AppDetailSheet: View {
         HStack {
             Button { Task { await download() } } label: {
                 VStack(spacing: 4) {
-                    if downloading { ProgressView().tint(blue).frame(height: 26) }
-                    else if onDevice { Image(systemName: "sdcard.fill").font(.system(size: 24)) }
+                    if downloading {
+                        ZStack {
+                            Circle().stroke(blue.opacity(0.25), lineWidth: 3)
+                            Circle().trim(from: 0, to: max(0.04, progress)).stroke(blue, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
+                        }
+                        .frame(width: 26, height: 26)
+                    }
+                    else if onDevice { Image(systemName: "checkmark.circle.fill").font(.system(size: 26)) }
                     else { Image(systemName: "arrow.down.circle").font(.system(size: 26)) }
-                    Text(downloading ? "Downloading" : (onDevice ? "Downloaded" : "Download")).font(.system(size: 13, weight: .semibold))
+                    Text(downloading ? "\(Int(progress * 100))%" : (onDevice ? "Downloaded" : "Download")).font(.system(size: 13, weight: .semibold)).monospacedDigit()
                 }
                 .foregroundStyle(blue).frame(width: 100)
             }
@@ -1315,6 +1331,7 @@ struct AppDetailSheet: View {
         downloading = true; error = nil; progress = 0
         do {
             _ = try await IPADownloader.shared.download(app) { p in Task { @MainActor in progress = p } }
+            await IPAInbox.storeIcon(for: app)
             onDevice = true; progress = 1
             AppStatsStore.shared.noteDownload(app)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
