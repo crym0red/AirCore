@@ -1019,6 +1019,9 @@ private struct SourceDetailScreen: View {
                 }
                 .contentShape(Rectangle())
                 .onTapGesture { openGroup = g }
+                .contextMenu {
+                    Button { InstallQueue.shared.enqueue(app) } label: { Label("Queue: download, sign & install", systemImage: "text.badge.plus") }
+                }
                 Spacer(minLength: 8)
                 VStack(spacing: 8) {
                     Button { Task { await download(app) } } label: {
@@ -1346,6 +1349,17 @@ struct AppDetailSheet: View {
                 Text("Powered by \((source.url.host ?? source.name).uppercased())").font(.system(size: 9, weight: .semibold)).foregroundStyle(blue).lineLimit(1).minimumScaleFactor(0.7)
             }
             .frame(maxWidth: .infinity)
+            Spacer()
+            Button {
+                InstallQueue.shared.enqueue(app); dismiss()
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "bolt.fill").font(.system(size: 26))
+                    Text("Auto Install").font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(app.downloadURL == nil ? Theme.subtle : blue).frame(width: 100)
+            }
+            .disabled(app.downloadURL == nil)
             Spacer()
             Button {
                 dismiss(); SignQueue.shared.enqueue(IPAInbox.url(for: app))
