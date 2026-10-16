@@ -24,7 +24,7 @@ struct UnzipDropApp: App {
                 .environmentObject(session)
                 .environmentObject(config)
                 .onOpenURL { url in session.receiveIncoming(url) }
-                .overlay(alignment: .top) { NativeInstallBanner() }
+                .overlay(alignment: .bottom) { NativeInstallBanner() }
                 .onChange(of: scenePhase) { phase in
                     if phase == .active { Task { await VPNReconnectCoordinator.shared.appBecameActive() } }
                 }

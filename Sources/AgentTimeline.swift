@@ -55,15 +55,21 @@ nonisolated enum AgentStepParser {
         var filesStart: Int?
         var lastRealloc: String?
         var warnIndex: Int?
+        var bundleIdx: Int?     // the single "Sign app bundle" step that absorbs every folder + file that follows
 
         func time(_ i: Int) -> Date? { i < times.count ? times[i] : nil }
         func open(_ step: AgentStep, at i: Int) {
             var s = step; s.startedAt = time(i)
+            bundleIdx = nil
             if let last = out.indices.last, out[last].endedAt == nil, out[last].kind != .warn { out[last].endedAt = time(i) }
             out.append(s)
         }
         func flushFiles(at i: Int) {
             guard !files.isEmpty else { return }
+            if let b = bundleIdx, b == out.indices.last {
+                out[b].children.append(contentsOf: files); files = []; filesStart = nil
+                return
+            }
             var s = AgentStep(icon: "doc.badge.gearshape", title: files.count == 1 ? "Sign 1 file" : "Sign \(files.count) files", children: files)
             s.startedAt = filesStart.flatMap(time)
             s.endedAt = time(i)
@@ -118,7 +124,13 @@ nonisolated enum AgentStepParser {
             if low.hasPrefix("signfolder:") {
                 flushFiles(at: i)
                 let name = String(l.dropFirst("signfolder:".count)).trimmingCharacters(in: .whitespaces)
-                open(AgentStep(icon: "folder.badge.gearshape", title: "Sign app bundle", children: [AgentChild(text: name, raw: [r])]), at: i); continue }
+                if let b = bundleIdx, b == out.indices.last {
+                    out[b].children.append(AgentChild(text: name, raw: [r]))
+                } else {
+                    open(AgentStep(icon: "folder.badge.gearshape", title: "Sign app bundle", children: [AgentChild(text: name, raw: [r])]), at: i)
+                    bundleIdx = out.indices.last
+                }
+                continue }
             if low.contains("no enough codesignature space") {
                 if let m = l.range(of: "Now: ", options: .caseInsensitive) {
                     lastRealloc = "realloc " + String(l[m.upperBound...]).replacingOccurrences(of: ", Need: ", with: " → ")

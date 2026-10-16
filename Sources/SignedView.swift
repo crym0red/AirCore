@@ -7,7 +7,6 @@ import SwiftUI
 import UIKit
 
 struct SignedView: View {
-    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @ObservedObject private var signed = SignedStore.shared
     @ObservedObject private var ota = OTAInstaller.shared
     @State private var installing: String?
@@ -15,6 +14,10 @@ struct SignedView: View {
     @State private var error: String?
     @State private var search = ""
     @State private var sheetEntry: SignedEntry?
+    @ObservedObject private var batch = NativeBatchInstaller.shared
+    @State private var selecting = false
+    @State private var selected: Set<String> = []
+    @State private var showBatch = false
 
     private var entries: [SignedEntry] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -49,22 +52,48 @@ struct SignedView: View {
             }
             .task { installCounts = await ZefvVPS.installCounts() }
             .safeAreaInset(edge: .top, spacing: 0) {
-                TabTitleBar(title: "Signed", center: "\(signed.entries.count) Apps") {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.16)) { showSearch.toggle(); if !showSearch { search = "" } }
-                    } label: {
-                        Image(systemName: showSearch ? "xmark" : "magnifyingglass")
-                            .font(.system(size: 18, weight: .semibold)).foregroundStyle(SSTheme.tintColor)
+                TabTitleBar(title: "Signed", center: selecting ? "\(selected.count) Selected" : "\(signed.entries.count) Apps") {
+                    HStack(spacing: 18) {
+                        if !signed.entries.isEmpty {
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.16)) { selecting.toggle(); selected = [] }
+                            } label: {
+                                if selecting { Text("Cancel").font(.system(size: 16, weight: .semibold)).foregroundStyle(SSTheme.tintColor) }
+                                else { Image(systemName: "checkmark.circle").font(.system(size: 18, weight: .semibold)).foregroundStyle(SSTheme.tintColor) }
+                            }
+                        }
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.16)) { showSearch.toggle(); if !showSearch { search = "" } }
+                        } label: {
+                            Image(systemName: showSearch ? "xmark" : "magnifyingglass")
+                                .font(.system(size: 18, weight: .semibold)).foregroundStyle(SSTheme.tintColor)
+                        }
                     }
                 }
             }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selecting { batchBar }
+        }
+        .sheet(isPresented: $showBatch) {
+            BatchInstallSheet().presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         }
         .sheet(item: $share) { ShareSheet(items: [$0.url]) }
         .sheet(item: $sheetEntry) { e in
             AppActionSheet(
                 name: e.name, bundle: e.bundleID,
                 icon: e.iconURL.flatMap { try? Data(contentsOf: $0) },
-                actions: actionSheetActions(for: e)
+                actions: [
+                    .init(title: "Install App", icon: "square.and.arrow.down", role: .normal) {
+                        sheetEntry = nil; Task { await install(e) }
+                    },
+                    .init(title: "Re-Sign App", icon: "checkmark.seal", role: .normal) {
+                        sheetEntry = nil; SignQueue.shared.enqueue(e.ipaURL)
+                    },
+                    .init(title: "Delete", icon: "trash", role: .destructive) {
+                        sheetEntry = nil; signed.delete(e)
+                    },
+                ]
             )
             .presentationDetents([.height(340)])
             .then { view in
@@ -86,8 +115,52 @@ struct SignedView: View {
             pill: signedBadge(e),
             busy: installing == e.id,
             accent: SSTheme.tintColor,
-            onTap: { sheetEntry = e }
+            onTap: {
+                if selecting { toggle(e) } else { sheetEntry = e }
+            }
         )
+        .overlay(alignment: .trailing) {
+            if selecting {
+                Image(systemName: selected.contains(e.id) ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 24)).foregroundStyle(selected.contains(e.id) ? SSTheme.tintColor : Theme.subtle)
+                    .padding(.trailing, 2).allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func toggle(_ e: SignedEntry) {
+        UISelectionFeedbackGenerator().selectionChanged()
+        if selected.contains(e.id) { selected.remove(e.id) } else { selected.insert(e.id) }
+    }
+
+    private var batchBar: some View {
+        VStack(spacing: 8) {
+            if !NativeInstaller.isSelected {
+                Text("Batch install needs the Native method — switch it in Settings › Connection Controller.")
+                    .font(.caption).foregroundStyle(.orange).multilineTextAlignment(.center)
+            }
+            HStack(spacing: 10) {
+                Button(selected.count == entries.count ? "Select None" : "Select All") {
+                    selected = selected.count == entries.count ? [] : Set(entries.map(\.id))
+                }
+                .font(.system(size: 15, weight: .semibold)).foregroundStyle(SSTheme.tintColor).frame(minHeight: 48).padding(.horizontal, 6)
+                Button {
+                    let picked = signed.entries.filter { selected.contains($0.id) }
+                    batch.start(picked)
+                    selecting = false; selected = []
+                    showBatch = true
+                } label: {
+                    Text(selected.isEmpty ? "Pick apps to install" : "Install \(selected.count) App\(selected.count == 1 ? "" : "s")")
+                        .font(.system(size: 16, weight: .bold)).foregroundStyle(.black)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .background(SSTheme.tintColor.opacity(selected.isEmpty || !NativeInstaller.isSelected ? 0.35 : 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .disabled(selected.isEmpty || !NativeInstaller.isSelected || batch.isRunning || NativeInstaller.shared.isActive)
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(.ultraThinMaterial)
     }
 
     private func signedBadge(_ e: SignedEntry) -> String {
@@ -95,42 +168,9 @@ struct SignedView: View {
         return "Signed \(airshareRelative(e.signedAt))\(installs)"
     }
 
-    /// Built as a plain `var` + `append` rather than one big array-literal
-    /// expression — a chain of `+`/ternary/trailing-closure array literals is
-    /// exactly the shape that trips up Swift's type-checker ("unable to type-
-    /// check this expression in reasonable time").
-    private func actionSheetActions(for e: SignedEntry) -> [AppActionSheet.Action] {
-        var out: [AppActionSheet.Action] = []
-        out.append(.init(title: "Install App", icon: "square.and.arrow.down", role: .normal) {
-            sheetEntry = nil; Task { await install(e) }
-        })
-        // Only offered when TrollStore is actually detected on-device
-        // (apple-magnifier:// scheme — see OTAInstaller.trollStoreAvailable).
-        // Skips our own signing/provisioning limits entirely: TrollStore
-        // installs the raw IPA itself via its own persistence.
-        if OTAInstaller.trollStoreAvailable {
-            out.append(.init(title: "Install with TrollStore", icon: "bolt.fill", role: .normal) {
-                sheetEntry = nil; Task { await installTrollStore(e) }
-            })
-        }
-        out.append(.init(title: "Re-Sign App", icon: "checkmark.seal", role: .normal) {
-            sheetEntry = nil; SignQueue.shared.enqueue(e.ipaURL)
-        })
-        out.append(.init(title: "Delete", icon: "trash", role: .destructive) {
-            sheetEntry = nil; signed.delete(e)
-        })
-        return out
-    }
-
     private func install(_ e: SignedEntry) async {
         installing = e.id; error = nil
         do { try await OTAInstaller.shared.install(e) } catch { self.error = error.localizedDescription }
-        installing = nil
-    }
-
-    private func installTrollStore(_ e: SignedEntry) async {
-        installing = e.id; error = nil
-        do { try await OTAInstaller.shared.installWithTrollStore(e) } catch { self.error = error.localizedDescription }
         installing = nil
     }
 }
@@ -152,7 +192,7 @@ struct AppActionSheet: View {
     let icon: Data?
     let actions: [Action]
 
-    private var blue: Color { Theme.accent }
+    private let blue = Color(red: 0.25, green: 0.55, blue: 1.0)
 
     var body: some View {
         VStack(spacing: 0) {

@@ -1732,6 +1732,7 @@ private struct NativeInstallScreen: View {
     @AppStorage(AppAutoUpdater.wifiOnlyKey) private var wifiOnly = false
     @AppStorage(AppAutoUpdater.chargingOnlyKey) private var chargingOnly = false
     @AppStorage(AppAutoUpdater.certRefreshKey) private var certRefresh = false
+    @AppStorage("AirShare.uploadChunkMB") private var chunkMB = 4
     @State private var confirmReset = false
     @Environment(\.dismiss) private var dismiss
 
@@ -2142,6 +2143,17 @@ private struct NativeInstallScreen: View {
                 TNote(text: manager.mode == .builtIn
                       ? "Built-in manages a local VPN inside AirShare. Creating a pairing on-device needs iOS 27+, Developer Mode and Local Network access. The VPN may replace another active VPN."
                       : "Manual uses an imported pairingFile.plist in AirShare's Documents folder and your own local VPN.")
+            }
+            Section {
+                Picker(selection: $chunkMB) {
+                    ForEach([1, 2, 4, 8, 16], id: \.self) { Text($0 == 4 ? "\($0) MB (Default)" : "\($0) MB").tag($0) }
+                } label: {
+                    Label("Upload chunk size", systemImage: "square.stack.3d.up").foregroundStyle(Theme.text)
+                }
+                .pickerStyle(.menu).listRowBackground(Theme.card).disabled(busy)
+                TNote(text: "Applies to the next native install. Bigger chunks mean fewer round trips and may upload faster, but use more memory. Compare the same app at different sizes using the Upload time under Last install.")
+            } header: {
+                Text("Upload performance").font(.caption.weight(.semibold)).foregroundStyle(Theme.subtle)
             }
             Section { statusRows }
         }

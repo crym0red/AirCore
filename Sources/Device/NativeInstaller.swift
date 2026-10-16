@@ -19,6 +19,7 @@ final class NativeInstaller: ObservableObject {
     /// Original (compressed) IPA each signed IPA was made from, so the upload can reuse its compressed bytes.
     /// Set by whoever signs, keyed by the signed IPA's path. In memory only.
     private static var originals: [String: URL] = [:]
+    static func original(forSigned url: URL) -> URL? { originals[url.path] }
     static func registerOriginal(_ original: URL, forSigned signed: URL) { originals[signed.path] = original }
     /// A re-signed copy keeps the same unsigned original for the fast repack.
     static func carryOriginal(from old: URL, to new: URL) { if let o = originals[old.path] { originals[new.path] = o } }
@@ -322,7 +323,7 @@ final class NativeInstaller: ObservableObject {
     /// Smaller copy of a signed IPA in a temp folder, or nil if it's small / not worth it.
     /// Fast path: copy the original's compressed bytes for unchanged files (ZipDelta).
     /// Fallback: unpack and deflate everything.
-    private nonisolated static func packedCopy(of ipa: URL, original: URL?) async throws -> URL? {
+    nonisolated static func packedCopy(of ipa: URL, original: URL?) async throws -> URL? {
         try await Task.detached(priority: .userInitiated) {
             let fm = FileManager.default
             let size = (try? fm.attributesOfItem(atPath: ipa.path)[.size] as? Int64) ?? 0
@@ -390,7 +391,7 @@ struct NativeInstallBanner: View {
                 .disabled(!manager.canReconnectVPN)
             }
         }
-        .padding(.top, 6)
+        .padding(.bottom, 88)      // sits just above the tab bar
         .animation(.easeInOut(duration: 0.2), value: installer.stage)
         .task { AppAutoUpdater.shared.autoCheckIfDue() }
         .onChange(of: scenePhase) { phase in
@@ -429,7 +430,7 @@ struct NativeInstallBanner: View {
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .padding(.horizontal, 14)
-        .transition(.move(edge: .top).combined(with: .opacity))
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     @ViewBuilder private var icon: some View {

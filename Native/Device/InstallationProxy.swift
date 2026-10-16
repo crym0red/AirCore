@@ -131,7 +131,10 @@ public final class InstallationProxy: Identifiable, ObservableObject {
         let stagingPath = "/PublicStaging/\(UUID().uuidString).ipa"
         remotePath = stagingPath
         try check(afc_file_open(afc, stagingPath, AfcWrOnly, &file))
-        // Bound resident upload memory per admitted job: files are streamed in 1 MB chunks.
+        // Bound resident upload memory per admitted job: files are streamed in chunks.
+        // Chunk size is user-selectable (Settings › Install Method › Connection); each write is one round trip.
+        let chosenMB = UserDefaults.standard.integer(forKey: "AirShare.uploadChunkMB")
+        let chunkBytes = [1, 2, 4, 8, 16].contains(chosenMB) ? chosenMB * 1_048_576 : 4 * 1_048_576
         var sent: UInt64 = 0
         var knownTotal: UInt64 = 0
         var tailPending = false
@@ -146,7 +149,7 @@ public final class InstallationProxy: Identifiable, ObservableObject {
             var offset: UInt64 = 0
             while offset < byteCount {
                 try checkCancellation()
-                let size = Int(min(1024 * 1024, byteCount - offset))
+                let size = Int(min(UInt64(chunkBytes), byteCount - offset))
                 let written = try autoreleasepool { () throws -> Int in
                     guard let data = try input.read(upToCount: size), !data.isEmpty else {
                         throw IDeviceSwiftError(message: "The IPA ended before its upload completed.")

@@ -5456,6 +5456,18 @@ struct NativeInstallTile: View {
             Text(status).font(.system(size: 14, weight: done ? .bold : .medium))
                 .foregroundStyle(failed != nil ? Color.red : (done ? Color(red: 0.2, green: 1.0, blue: 0.45) : .white.opacity(0.7)))
                 .multilineTextAlignment(.center)
+            if !done && failed == nil {
+                VStack(spacing: 4) {
+                    Label("Keep AirShare open", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 14, weight: .bold)).foregroundStyle(Color(red: 1, green: 0.8, blue: 0.3))
+                    Text("Please stay on this screen until the app finishes installing. Leaving AirShare may interrupt the installation process.")
+                        .font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                }
+                .padding(12).frame(maxWidth: .infinity)
+                .background(Color(red: 1, green: 0.8, blue: 0.3).opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .padding(.top, 4)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 20).padding(.horizontal, 16)
