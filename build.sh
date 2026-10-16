@@ -123,6 +123,12 @@ rm -rf "$OUT"; mkdir -p "$OUT/Payload"
 cp -R "$APP_PATH" "$OUT/Payload/"
 # Re-signers (zsign) need write access to every Mach-O (Xcode ships some mode 0555).
 chmod -R u+rwX "$OUT/Payload"
+# Stamp the commit so the app can tell whether the repo has a newer build (self-update).
+STAMP_APP="$(ls -d "$OUT"/Payload/*.app | head -n1)"
+if [ -n "$STAMP_APP" ]; then
+  /usr/libexec/PlistBuddy -c "Delete :AirShareBuildSHA" "$STAMP_APP/Info.plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Add :AirShareBuildSHA string ${GITHUB_SHA:-unknown}" "$STAMP_APP/Info.plist" || true
+fi
 # Strip anything that can't ship unsigned / isn't needed for sideloading.
 find "$OUT/Payload" -name "_CodeSignature" -type d -prune -exec rm -rf {} + 2>/dev/null || true
 find "$OUT/Payload" -name "embedded.mobileprovision" -delete 2>/dev/null || true

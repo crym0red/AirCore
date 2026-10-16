@@ -42,6 +42,38 @@ final class NativeInstaller: ObservableObject {
     @Published private(set) var job: Job?
     @Published private(set) var stage: Stage = .idle
     @Published private(set) var progress: Double = 0
+    /// Per-stage seconds of the last finished install, e.g. [("Connect", 1.2), ("Upload", 4.0), ("Install", 6.1)].
+    @Published private(set) var timings: [(label: String, seconds: Double)] = []
+    private var marks: [(stage: Stage, at: Date)] = []
+
+    /// "Connect 1.2s · Upload 4.0s · Install 6.1s · Total 11.3s"
+    var timingSummary: String {
+        guard !timings.isEmpty else { return "" }
+        let total = timings.reduce(0) { $0 + $1.seconds }
+        return (timings.map { String(format: "%@ %.1fs", $0.label, $0.seconds) } + [String(format: "Total %.1fs", total)])
+            .joined(separator: " · ")
+    }
+
+    private func enter(_ new: Stage) {
+        guard stage != new else { return }
+        stage = new
+        if !marks.contains(where: { $0.stage == new }) { marks.append((new, Date())) }
+    }
+
+    private func finishTimings() {
+        guard let first = marks.first else { return }
+        let end = Date()
+        let at: (Stage) -> Date? = { st in self.marks.first(where: { $0.stage == st })?.at }
+        var edges: [(String, Date)] = [("Connect", first.at)]
+        if let u = at(.uploading) { edges.append(("Upload", u)) }
+        if let i = at(.installing) { edges.append(("Install", i)) }
+        var out: [(label: String, seconds: Double)] = []
+        for (idx, e) in edges.enumerated() {
+            let next = idx + 1 < edges.count ? edges[idx + 1].1 : end
+            out.append((e.0, max(0, next.timeIntervalSince(e.1))))
+        }
+        timings = out
+    }
 
     var isActive: Bool {
         switch stage { case .connecting, .uploading, .installing: return true; default: return false }
@@ -74,7 +106,9 @@ final class NativeInstaller: ObservableObject {
         let id = UUID()
         workflowID = id
         job = Job(name: name, bundleID: bundleID)
-        stage = .connecting
+        timings = []
+        marks = []
+        enter(.connecting)
         progress = 0
 
         observer = viewModel.objectWillChange.sink { [weak self, weak viewModel] _ in
@@ -83,8 +117,8 @@ final class NativeInstaller: ObservableObject {
                 guard let self, let viewModel, self.workflowID == id else { return }
                 self.progress = viewModel.overallProgress
                 switch viewModel.status {
-                case .sendingManifest, .sendingPayload: self.stage = .uploading
-                case .installing: self.stage = .installing
+                case .sendingManifest, .sendingPayload: self.enter(.uploading)
+                case .installing: self.enter(.installing)
                 default: break
                 }
             }
@@ -102,6 +136,8 @@ final class NativeInstaller: ObservableObject {
                                       mode: manager.mode, bundleIdentifier: bundleID,
                                       isCurrent: { true })
             progress = 1
+            finishTimings()
+            AppAutoUpdater.shared.recordInstalled(bundleID: bundleID, name: name, version: version)
             stage = .done
             ZefvVPS.report(bundle: bundleID, version: version, name: name, stage: "installed")
         } catch is CancellationError {
@@ -129,6 +165,7 @@ struct NativeInstallBanner: View {
     @ObservedObject private var reconnect = VPNReconnectCoordinator.shared
     @ObservedObject private var manager = DeviceInstallationManager.shared
     @ObservedObject private var pairing = DevicePairingService.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         VStack(spacing: 8) {
@@ -148,6 +185,10 @@ struct NativeInstallBanner: View {
         }
         .padding(.top, 6)
         .animation(.easeInOut(duration: 0.2), value: installer.stage)
+        .task { SelfUpdater.shared.autoCheckIfDue(); AppAutoUpdater.shared.autoCheckIfDue() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active { SelfUpdater.shared.autoCheckIfDue(); AppAutoUpdater.shared.autoCheckIfDue() }
+        }
     }
 
     private func card(_ job: NativeInstaller.Job) -> some View {
@@ -170,6 +211,9 @@ struct NativeInstallBanner: View {
                     Text("Open Settings › Privacy & Security › Developer Mode and choose Pair with AirShare.")
                         .font(.caption)
                 }
+            } else if installer.stage == .done, !installer.timingSummary.isEmpty {
+                Text("Installed").font(.caption).foregroundStyle(.secondary)
+                Text(installer.timingSummary).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
             } else {
                 Text(installer.stage.label).font(.caption).foregroundStyle(.secondary)
                 if installer.isActive { ProgressView(value: installer.progress) }
@@ -230,6 +274,7 @@ struct InstallMethodPicker: View {
             .padding(12)
             .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(accent.opacity(0.35), lineWidth: 1))
+            if method == "native" { SelfUpdateCard().padding(.top, 6); AppUpdateCard().padding(.top, 6) }
         }
     }
 }

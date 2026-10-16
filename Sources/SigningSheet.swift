@@ -1213,6 +1213,8 @@ struct SigningSheet: View {
             lastEntitlements = outcome.entitlements
             lastSizeBytes = outcome.sizeBytes
             let entry = try SignedStore.shared.add(outcome: outcome, icon: iconPNG ?? meta.iconPNG, certName: material.name)
+            SignProfileStore.shared.save(options: options, signedBundleID: entry.bundleID,
+                                         sourceBundleID: meta.bundleID, sourceVersion: meta.version)
             log.append(contentsOf: postSignLines(outcome.entitlements, entry: entry))
             result = entry
             onSigned(entry)
@@ -1293,8 +1295,16 @@ struct SigningSheet: View {
     private func install(_ r: SignedEntry) async {
         error = nil
         do {
+            let native = NativeInstaller.isSelected
+            let started = Date()
             try await OTAInstaller.shared.install(r)
-            log.append("✓ Install triggered — confirm on your home screen")
+            if native {
+                log.append(String(format: "✓ Install triggered — installed natively over the built-in VPN in %.1fs", Date().timeIntervalSince(started)))
+                let t = NativeInstaller.shared.timingSummary
+                if !t.isEmpty { log.append("⏱ " + t) }
+            } else {
+                log.append("✓ Install triggered — confirm on your home screen")
+            }
             withAnimation { sentToHome = true }
             try? await Task.sleep(nanoseconds: 2_600_000_000)
             withAnimation { sentToHome = false }
@@ -5374,6 +5384,7 @@ struct SentToHomeOverlay: View {
     let name: String
     let icon: Data?
     let host: String
+    var title: String = "Sent to Home Screen"
     @State private var progress: CGFloat = 0
 
     private var blue: Color { Theme.accent }
@@ -5392,7 +5403,7 @@ struct SentToHomeOverlay: View {
                     .offset(x: 5, y: 5)
                 }
                 Text(name).font(.system(size: 13)).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
-                Text("Sent to Home Screen").font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
+                Text(title).font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
                     .multilineTextAlignment(.center)
                 Text(host).font(.system(size: 13, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.85))
