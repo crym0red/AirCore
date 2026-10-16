@@ -42,6 +42,7 @@ struct TabTitleBar<Trailing: View>: View {
                         .frame(maxWidth: .infinity).padding(.horizontal, 90)
                 }
                 HStack(spacing: 10) {
+                    ThemePaletteButton()
                     Spacer()
                     trailing
                 }

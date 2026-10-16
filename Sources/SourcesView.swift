@@ -628,7 +628,7 @@ struct SourcesView: View {
             }
             Spacer()
             HStack(spacing: 5) {
-                SourceIcon(url: hit.source.iconURL, side: 16, fallback: hit.source.name)
+                SourceIcon(url: hit.source.iconURL, side: 16, fallback: hit.source.name, locked: hit.source.isLocked)
                 Text(hit.source.name.uppercased()).font(.system(size: 9, weight: .heavy, design: .monospaced)).kerning(0.5)
             }
             .padding(.horizontal, 7).padding(.vertical, 4)
@@ -639,7 +639,7 @@ struct SourcesView: View {
 
     private func sourceRow(_ s: RepoSource) -> some View {
         HStack(spacing: 14) {
-            SourceIcon(url: s.iconURL, side: 54, fallback: s.name)
+            SourceIcon(url: s.iconURL, side: 54, fallback: s.name, locked: s.isLocked)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(s.name).font(.system(size: 19, weight: .bold)).foregroundStyle(Theme.text).lineLimit(1)
@@ -831,7 +831,7 @@ private struct SourceDetailScreen: View {
         ZStack {
             // centered: repo icon + name
             HStack(spacing: 8) {
-                SourceIcon(url: current.iconURL, side: 24, fallback: current.name)
+                SourceIcon(url: current.iconURL, side: 24, fallback: current.name, locked: current.isLocked)
                 Text(current.name.uppercased()).font(.system(size: 17, weight: .bold)).kerning(0.6).foregroundStyle(Theme.text).lineLimit(1)
             }
             .frame(maxWidth: .infinity).padding(.horizontal, 100)
@@ -1056,7 +1056,20 @@ struct SourceIcon: View {
     let url: URL?
     let side: CGFloat
     var fallback: String = ""
-    var body: some View { CachedIcon(url: url, side: side, fallback: fallback) }
+    var locked: Bool = false          // the built-in AirShare source always shows the AirCore logo
+    var body: some View {
+        if locked {
+            ZStack {
+                RoundedRectangle(cornerRadius: side * 0.22, style: .continuous).fill(Color.black)
+                Image("aircore_logo").resizable().scaledToFit().padding(side * 0.14)
+            }
+            .frame(width: side, height: side)
+            .overlay(RoundedRectangle(cornerRadius: side * 0.22, style: .continuous).stroke(Theme.accent.opacity(0.35), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: side * 0.22, style: .continuous))
+        } else {
+            CachedIcon(url: url, side: side, fallback: fallback)
+        }
+    }
 }
 
 // MARK: - Inbox + downloader (progress-reporting)
@@ -1096,7 +1109,7 @@ struct AppDetailSheet: View {
     private var detailTitleBar: some View {
         ZStack {
             HStack(spacing: 8) {
-                SourceIcon(url: source.iconURL, side: 22, fallback: source.name)
+                SourceIcon(url: source.iconURL, side: 22, fallback: source.name, locked: source.isLocked)
                 Text(source.name.uppercased()).font(.system(size: 15, weight: .bold)).kerning(1).foregroundStyle(Theme.text)
             }
             HStack {

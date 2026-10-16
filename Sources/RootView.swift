@@ -42,6 +42,9 @@ struct RootView: View {
         .id(theme.revision)                                   // re-skin every tab on a theme change
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(ThemeBackgroundLayer())                      // particle/grid network floats over the tab content
+        .overlay { dropdownLayer }                            // palette + account dropdowns
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: theme.panelShown)
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: account.panelShown)
 
         .task {
             Task { _ = await LibraryCache.shared.refresh() }   // Library is ready before you open it
@@ -94,6 +97,37 @@ struct RootView: View {
         } message: { Text(signError ?? "") }
         .fullScreenCover(isPresented: $onboarding.needsOnboarding) {
             OnboardingView { onboarding.complete() }
+        }
+    }
+
+    /// Theme palette (top-left button) and account dropdown (username chip) — tap outside to close.
+    @ViewBuilder private var dropdownLayer: some View {
+        if theme.panelShown || account.panelShown {
+            GeometryReader { g in
+                ZStack(alignment: .topLeading) {
+                    Color.black.opacity(0.35).ignoresSafeArea()
+                        .onTapGesture { theme.panelShown = false; account.panelShown = false }
+                    if theme.panelShown {
+                        ThemePanel()
+                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Theme.accent.opacity(0.3), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.5), radius: 18, y: 8)
+                            .padding(.leading, 12).padding(.top, g.safeAreaInsets.top + 54)
+                            .transition(.scale(scale: 0.94, anchor: .topLeading).combined(with: .opacity))
+                    }
+                    if account.panelShown {
+                        AccountDropdown()
+                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Theme.stroke, lineWidth: 1))
+                            .shadow(color: .black.opacity(0.5), radius: 18, y: 8)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .padding(.trailing, 12).padding(.top, g.safeAreaInsets.top + 100)
+                            .transition(.scale(scale: 0.94, anchor: .topTrailing).combined(with: .opacity))
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            .ignoresSafeArea()
         }
     }
 
