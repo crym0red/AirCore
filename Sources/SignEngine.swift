@@ -416,11 +416,17 @@ nonisolated enum Signer {
         onLog?(">>> Extracting IPA…")
         let extractionStart = ContinuousClock.now
         var fastUnpacked = false
-        do { try ZipFast.extract(ipa: ipaURL, to: extractDir); fastUnpacked = true }
-        catch {
-            // Fast path couldn't handle this IPA — start over with the general extractor.
-            try? fm.removeItem(at: extractDir)
-            try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
+        let useFast = ZipFast.begin()
+        defer { if useFast { ZipFast.end() } }
+        if useFast {
+            do { try ZipFast.extract(ipa: ipaURL, to: extractDir); fastUnpacked = true }
+            catch {
+                // Fast path couldn't handle this IPA — start over with the general extractor.
+                try? fm.removeItem(at: extractDir)
+                try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
+                try fm.unzipItem(at: ipaURL, to: extractDir)
+            }
+        } else {
             try fm.unzipItem(at: ipaURL, to: extractDir)
         }
         let extractionSeconds = Double(extractionStart.duration(to: ContinuousClock.now).components.attoseconds) / 1e18 + Double(extractionStart.duration(to: ContinuousClock.now).components.seconds)

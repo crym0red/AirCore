@@ -21,6 +21,29 @@ nonisolated enum ZipFast {
     /// Every extracted file gets this modification time. A file with a different one was written by the signer.
     static let marker = Date(timeIntervalSince1970: 946_684_800)   // 2000-01-01
 
+    // MARK: Switch + crash guard
+
+    static let enabledKey = "AirShare.fastSigner"
+    static let trippedKey = "AirShare.fastSignerTripped"
+    private static let canaryKey = "AirShare.fastSignerCanary"
+
+    /// True when the fast path should run. Off by default. If the previous fast run never finished
+    /// (the app was killed mid-way), it switches itself off and records that so Settings can say why.
+    static func begin() -> Bool {
+        let d = UserDefaults.standard
+        if d.bool(forKey: canaryKey) {
+            d.set(false, forKey: enabledKey); d.set(true, forKey: trippedKey); d.set(false, forKey: canaryKey)
+        }
+        guard d.bool(forKey: enabledKey) else { d.synchronize(); return false }
+        d.set(true, forKey: canaryKey); d.synchronize()
+        return true
+    }
+
+    static func end() {
+        UserDefaults.standard.set(false, forKey: canaryKey)
+        UserDefaults.standard.synchronize()
+    }
+
     // MARK: Extract
 
     static func extract(ipa: URL, to dir: URL) throws {

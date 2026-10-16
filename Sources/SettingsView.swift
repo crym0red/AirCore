@@ -1733,6 +1733,8 @@ private struct NativeInstallScreen: View {
     @AppStorage(AppAutoUpdater.chargingOnlyKey) private var chargingOnly = false
     @AppStorage(AppAutoUpdater.certRefreshKey) private var certRefresh = false
     @AppStorage("AirShare.uploadChunkMB") private var chunkMB = 4
+    @AppStorage("AirShare.fastSigner") private var fastSigner = false
+    @AppStorage("AirShare.fastSignerTripped") private var fastSignerTripped = false
     @State private var confirmReset = false
     @Environment(\.dismiss) private var dismiss
 
@@ -2154,6 +2156,18 @@ private struct NativeInstallScreen: View {
                 TNote(text: "Applies to the next native install. Bigger chunks mean fewer round trips and may upload faster, but use more memory. Compare the same app at different sizes using the Upload time under Last install.")
             } header: {
                 Text("Upload performance").font(.caption.weight(.semibold)).foregroundStyle(Theme.subtle)
+            }
+            Section {
+                Toggle(isOn: $fastSigner) {
+                    Label("Fast signer (beta)", systemImage: "bolt.fill").foregroundStyle(Theme.text)
+                }
+                .tint(Theme.accent).listRowBackground(Theme.card)
+                .onChange(of: fastSigner) { on in if on { fastSignerTripped = false } }
+                TNote(text: fastSignerTripped
+                      ? "Fast signer was switched off automatically because AirShare closed during its last run. Turn it back on to test again."
+                      : "Unpacks and repacks IPAs in parallel and copies unchanged files as they are. Compare the Turbo timing line in the signing log with this on and off.")
+            } header: {
+                Text("Signing").font(.caption.weight(.semibold)).foregroundStyle(Theme.subtle)
             }
             Section { statusRows }
         }
