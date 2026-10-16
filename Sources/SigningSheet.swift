@@ -1200,6 +1200,8 @@ struct SigningSheet: View {
         let url = ipaURL
         let options = buildOptionsValue()
         let logSink = SigningLogSink { line in log.append(line) }
+        // Native: connect and upload the files signing won't touch while the signer is still running.
+        NativeInstaller.shared.beginPrestage(original: url, bundleID: meta.bundleID, name: name)
         do {
             let outcome = try await Task.detached(priority: .userInitiated) {
                 try await Signer.signDetached(
@@ -1223,6 +1225,7 @@ struct SigningSheet: View {
             // Native: start installing the moment signing finishes — no extra tap, no waiting.
             if NativeInstaller.isSelected { Task { await install(entry) } }
         } catch {
+            NativeInstaller.shared.cancelPrestage()
             self.error = error.localizedDescription
             log.append("error: \(error.localizedDescription)")
             UINotificationFeedbackGenerator().notificationOccurred(.error)
@@ -1307,9 +1310,12 @@ struct SigningSheet: View {
             } else {
                 log.append("✓ Install triggered — confirm on your home screen")
             }
-            withAnimation { sentToHome = true }
-            try? await Task.sleep(nanoseconds: 2_600_000_000)
-            withAnimation { sentToHome = false }
+            // Native shows its own install tile; the popup is only for the OTA handoff.
+            if !native {
+                withAnimation { sentToHome = true }
+                try? await Task.sleep(nanoseconds: 2_600_000_000)
+                withAnimation { sentToHome = false }
+            }
         } catch {
             self.error = error.localizedDescription
             log.append("error: install failed — \(error.localizedDescription)")
@@ -5092,7 +5098,11 @@ struct SigningTerminalView: View {
                             AgentWorkingRow(text: "AirShare is working…", since: lineTimes.first, now: now).padding(.top, 6)
                         } else if error == nil {
                             AgentStepRow(step: AgentStep(icon: "checkmark.circle", title: "Ready to install", kind: .done, startedAt: lineTimes.last, endedAt: lineTimes.last))
-                            AgentSummaryCard(summary: summary(steps)).padding(.top, 10)
+                            if NativeInstaller.isSelected, let result {
+                                NativeInstallTile(entry: result).padding(.top, 14)
+                            } else {
+                                AgentSummaryCard(summary: summary(steps)).padding(.top, 10)
+                            }
                         }
                         Color.clear.frame(height: done ? 100 : 24).id("BOTTOM")
                     }
@@ -5381,6 +5391,79 @@ struct InstallPromptOverlay: View {
 }
 
 // MARK: - "Sent to Home Screen" success overlay (AirShare-style)
+
+/// Native install status, drawn like an app installing on the Home Screen:
+/// dimmed icon with a progress ring, app name, a progress bar, then "Sent to Home Screen".
+struct NativeInstallTile: View {
+    let entry: SignedEntry
+    @ObservedObject private var installer = NativeInstaller.shared
+
+    private var mine: Bool {
+        guard let job = installer.job else { return false }
+        return job.bundleID == entry.bundleID || job.name == entry.name
+    }
+    private var done: Bool { mine && installer.stage == .done }
+    private var failed: String? { if mine, case .failed(let m) = installer.stage { return m }; return nil }
+    private var fraction: Double { done ? 1 : (mine ? min(max(installer.progress, 0), 1) : 0) }
+    private var status: String {
+        if let failed { return failed }
+        if done { return "Sent to Home Screen" }
+        guard mine else { return "Preparing…" }
+        switch installer.stage {
+        case .packing: return "Preparing…"
+        case .connecting: return "Connecting…"
+        case .uploading: return "Sending…"
+        case .installing: return "Installing…"
+        default: return "Waiting…"
+        }
+    }
+    private var icon: UIImage? { entry.iconURL.flatMap { UIImage(contentsOfFile: $0.path) } }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Group {
+                    if let icon { Image(uiImage: icon).resizable().scaledToFill() }
+                    else { RoundedRectangle(cornerRadius: 16).fill(Theme.accent.opacity(0.18)).overlay(Image(systemName: "app.fill").font(.system(size: 30)).foregroundStyle(Theme.accent)) }
+                }
+                .frame(width: 76, height: 76)
+                .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+                if !done && failed == nil {
+                    RoundedRectangle(cornerRadius: 17, style: .continuous).fill(Color.black.opacity(0.5)).frame(width: 76, height: 76)
+                    Circle().stroke(Color.white.opacity(0.25), lineWidth: 4).frame(width: 34, height: 34)
+                    Circle().trim(from: 0, to: max(0.04, fraction)).stroke(Color.white, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                        .frame(width: 34, height: 34).rotationEffect(.degrees(-90))
+                }
+                if done {
+                    Image(systemName: "checkmark.circle.fill").font(.system(size: 24))
+                        .foregroundStyle(Color(red: 0.2, green: 1.0, blue: 0.45), .black)
+                        .background(Circle().fill(Color.black).frame(width: 22, height: 22))
+                        .offset(x: 30, y: 30)
+                }
+            }
+            .frame(width: 84, height: 84)
+            Text(entry.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+            if failed == nil {
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.12))
+                        Capsule().fill(done ? Color(red: 0.2, green: 1.0, blue: 0.45) : Theme.accent)
+                            .frame(width: g.size.width * fraction)
+                    }
+                }
+                .frame(height: 5).padding(.horizontal, 40)
+            }
+            Text(status).font(.system(size: 14, weight: done ? .bold : .medium))
+                .foregroundStyle(failed != nil ? Color.red : (done ? Color(red: 0.2, green: 1.0, blue: 0.45) : .white.opacity(0.7)))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20).padding(.horizontal, 16)
+        .background(Color(white: 0.09)).clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .animation(.easeInOut(duration: 0.25), value: fraction)
+        .animation(.easeInOut(duration: 0.25), value: done)
+    }
+}
 
 struct SentToHomeOverlay: View {
     let name: String

@@ -11,6 +11,41 @@ public struct IDeviceInstallationRejection: LocalizedError {
     init(message: String) { self.message = message }
 }
 
+/// An IPA that arrives in two parts: a prefix that is known up front (uploaded while the app is still
+/// being signed) and a tail (changed files + zip directory) that is supplied once signing finishes.
+public final class StreamedIPA: @unchecked Sendable {
+    public struct Failure: LocalizedError {
+        public let message: String
+        public var errorDescription: String? { message }
+        public init(_ message: String) { self.message = message }
+    }
+    private let lock = NSLock()
+    private let prefixSignal = DispatchSemaphore(value: 0)
+    private let tailSignal = DispatchSemaphore(value: 0)
+    private var prefix: Result<URL, Error>?
+    private var tail: Result<URL, Error>?
+    public init() {}
+
+    public func setPrefix(_ r: Result<URL, Error>) {
+        lock.lock(); let first = prefix == nil; if first { prefix = r }; lock.unlock()
+        if first { prefixSignal.signal() }
+    }
+    public func setTail(_ r: Result<URL, Error>) {
+        lock.lock(); let first = tail == nil; if first { tail = r }; lock.unlock()
+        if first { tailSignal.signal() }
+    }
+    func waitPrefix(_ check: () throws -> Void) throws -> URL {
+        while prefixSignal.wait(timeout: .now() + 0.25) == .timedOut { try check() }
+        lock.lock(); defer { lock.unlock() }
+        return try prefix!.get()
+    }
+    func waitTail(_ check: () throws -> Void) throws -> URL {
+        while tailSignal.wait(timeout: .now() + 0.25) == .timedOut { try check() }
+        lock.lock(); defer { lock.unlock() }
+        return try tail!.get()
+    }
+}
+
 public final class InstallationProxy: Identifiable, ObservableObject {
     public let viewModel: InstallerStatusViewModel
     private let cancellation = IDeviceInstallCancellation()
@@ -20,14 +55,14 @@ public final class InstallationProxy: Identifiable, ObservableObject {
 
     // Each proxy is one attempt. Cancellation waits for any native call already
     // in progress to return before releasing resources and its admission slot.
-    public func install(at url: URL, suspend: Bool = false,
+    public func install(at url: URL, suspend: Bool = false, streamed: StreamedIPA? = nil,
                         isCurrent: @escaping () -> Bool = { true }) async throws {
         self.isCurrent = isCurrent
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             try await IDeviceInstallationWorker.performInstallation { [self] in
                 try cancellation.check()
-                try installSynchronously(at: url, suspend: suspend)
+                try installSynchronously(at: url, suspend: suspend, streamed: streamed)
             }
             try cancellation.check()
             await MainActor.run {
@@ -59,7 +94,7 @@ public final class InstallationProxy: Identifiable, ObservableObject {
         throw IDeviceSwiftError(error)
     }
 
-    private func installSynchronously(at url: URL, suspend: Bool) throws {
+    private func installSynchronously(at url: URL, suspend: Bool, streamed: StreamedIPA?) throws {
         let heartbeat = HeartbeatManager.shared
         guard FileManager.default.fileExists(atPath: HeartbeatManager.pairingFile()) else {
             throw IDeviceSwiftError(message: "Pair this device in Installation settings before installing.")
@@ -96,30 +131,52 @@ public final class InstallationProxy: Identifiable, ObservableObject {
         let stagingPath = "/PublicStaging/\(UUID().uuidString).ipa"
         remotePath = stagingPath
         try check(afc_file_open(afc, stagingPath, AfcWrOnly, &file))
-        // Bound resident upload memory per admitted job, including files for
-        // which Data.mappedIfSafe would fall back to loading the entire IPA.
-        let input = try FileHandle(forReadingFrom: url)
-        defer { try? input.close() }
-        let byteCount = try input.seekToEnd()
-        try input.seek(toOffset: 0)
-        guard byteCount > 0 else { throw IDeviceSwiftError(message: "The IPA is empty.") }
-        update { $0.packageProgress = 1; $0.status = .sendingPayload }
-        var offset: UInt64 = 0
-        while offset < byteCount {
-            try checkCancellation()
-            let size = Int(min(1024 * 1024, byteCount - offset))
-            let written = try autoreleasepool { () throws -> Int in
-                guard let data = try input.read(upToCount: size), !data.isEmpty else {
-                    throw IDeviceSwiftError(message: "The IPA ended before its upload completed.")
+        // Bound resident upload memory per admitted job: files are streamed in 1 MB chunks.
+        var sent: UInt64 = 0
+        var knownTotal: UInt64 = 0
+        var tailPending = false
+        func fileSize(_ u: URL) -> UInt64 {
+            ((try? FileManager.default.attributesOfItem(atPath: u.path)[.size] as? NSNumber)?.uint64Value) ?? 0
+        }
+        func send(_ fileURL: URL) throws {
+            let input = try FileHandle(forReadingFrom: fileURL)
+            defer { try? input.close() }
+            let byteCount = try input.seekToEnd()
+            try input.seek(toOffset: 0)
+            var offset: UInt64 = 0
+            while offset < byteCount {
+                try checkCancellation()
+                let size = Int(min(1024 * 1024, byteCount - offset))
+                let written = try autoreleasepool { () throws -> Int in
+                    guard let data = try input.read(upToCount: size), !data.isEmpty else {
+                        throw IDeviceSwiftError(message: "The IPA ended before its upload completed.")
+                    }
+                    try data.withUnsafeBytes { bytes in
+                        try check(afc_file_write(file, bytes.baseAddress!.assumingMemoryBound(to: UInt8.self), data.count))
+                    }
+                    return data.count
                 }
-                try data.withUnsafeBytes { bytes in
-                    try check(afc_file_write(file, bytes.baseAddress!.assumingMemoryBound(to: UInt8.self), data.count))
-                }
-                return data.count
+                offset += UInt64(written)
+                sent += UInt64(written)
+                let denominator = Double(max(knownTotal + (tailPending ? knownTotal / 10 : 0), 1))
+                let progress = min(1, Double(sent) / denominator)
+                update { $0.uploadProgress = progress }
             }
-            offset += UInt64(written)
-            let progress = Double(offset) / Double(byteCount)
-            update { $0.uploadProgress = progress }
+        }
+        update { $0.packageProgress = 1; $0.status = .sendingPayload }
+        if let streamed {
+            // Upload what's already known while the app is still being signed, then the changed tail.
+            let prefixURL = try streamed.waitPrefix { try self.checkCancellation() }
+            knownTotal = fileSize(prefixURL); tailPending = true
+            try send(prefixURL)
+            let tailURL = try streamed.waitTail { try self.checkCancellation() }
+            knownTotal += fileSize(tailURL); tailPending = false
+            try send(tailURL)
+        } else {
+            let byteCount = fileSize(url)
+            guard byteCount > 0 else { throw IDeviceSwiftError(message: "The IPA is empty.") }
+            knownTotal = byteCount
+            try send(url)
         }
         let closeResult = afc_file_close(file)
         file = nil // close consumes the handle, including on failure

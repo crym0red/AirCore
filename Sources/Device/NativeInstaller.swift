@@ -63,6 +63,9 @@ final class NativeInstaller: ObservableObject {
             .joined(separator: " · ")
     }
 
+    /// True while an install is being pre-staged during signing: device events must not move the stage clock.
+    private var holdStages = false
+
     private func enter(_ new: Stage) {
         guard stage != new else { return }
         stage = new
@@ -105,6 +108,20 @@ final class NativeInstaller: ObservableObject {
 
     func install(ipaURL: URL, bundleID: String, name: String, version: String) async throws {
         guard FileManager.default.fileExists(atPath: ipaURL.path) else { throw InstallError.ipaMissing }
+        if let p = pre, let original = Self.originals[ipaURL.path], original == p.original {
+            do {
+                try await finishPrestaged(p, signed: ipaURL, bundleID: bundleID, name: name, version: version)
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let final as FinalInstallError {
+                throw final.underlying
+            } catch {
+                // Pre-staging didn't work out (e.g. signing changed a file we'd already sent):
+                // clean up and do a normal install of the signed IPA instead.
+                discardPrestage(p)
+            }
+        }
         guard !isActive else { throw InstallError.busy }
 
         let manager = DeviceInstallationManager.shared
@@ -165,6 +182,141 @@ final class NativeInstaller: ObservableObject {
             stage = .failed(error.localizedDescription)
             throw error
         }
+    }
+
+
+    // MARK: Pre-staging (upload while signing)
+
+    private final class Pre {
+        let id = UUID()
+        let original: URL
+        let dir: URL
+        let streamed = StreamedIPA()
+        let viewModel = InstallerStatusViewModel(isIdevice: true)
+        var prefixTask: Task<ZipDelta.Prefix, Error>?
+        var installTask: Task<Void, Error>?
+        init(original: URL) {
+            self.original = original
+            dir = FileManager.default.temporaryDirectory.appendingPathComponent("native-pre-\(UUID().uuidString)", isDirectory: true)
+        }
+    }
+    private var pre: Pre?
+
+    /// Call when signing starts: connects to the device and uploads every file signing won't change,
+    /// so only the few changed files are left to send once signing finishes.
+    func beginPrestage(original: URL, bundleID: String, name: String) {
+        guard Self.isSelected, pre == nil, !isActive else { return }
+        let size = (try? FileManager.default.attributesOfItem(atPath: original.path)[.size] as? Int64) ?? 0
+        guard size > 20_000_000 else { return }
+        let p = Pre(original: original)
+        try? FileManager.default.createDirectory(at: p.dir, withIntermediateDirectories: true)
+        pre = p
+        let manager = DeviceInstallationManager.shared
+        job = Job(name: name, bundleID: bundleID)
+        timings = []; marks = []
+        holdStages = true
+        enter(.connecting)
+        progress = 0
+        observer = p.viewModel.objectWillChange.sink { [weak self, weak p] _ in
+            DispatchQueue.main.async {
+                guard let self, let p, self.pre?.id == p.id else { return }
+                self.progress = p.viewModel.overallProgress
+                guard !self.holdStages else { return }
+                switch p.viewModel.status {
+                case .sendingManifest, .sendingPayload: self.enter(.uploading)
+                case .installing: self.enter(.installing)
+                default: break
+                }
+            }
+        }
+        manager.retainWorkflow(p.id)
+        let prefixURL = p.dir.appendingPathComponent("prefix.bin")
+        let streamed = p.streamed
+        p.prefixTask = Task.detached(priority: .userInitiated) {
+            do {
+                let prefix = try ZipDelta.stage(original: original, to: prefixURL)
+                streamed.setPrefix(.success(prefix.url))
+                return prefix
+            } catch {
+                streamed.setPrefix(.failure(error))
+                throw error
+            }
+        }
+        p.installTask = Task {
+            try await manager.install(at: original, viewModel: p.viewModel, suspend: false,
+                                      mode: manager.mode, bundleIdentifier: bundleID, streamed: streamed,
+                                      isCurrent: { true })
+        }
+    }
+
+    /// Signing failed or was cancelled.
+    func cancelPrestage() { if let p = pre { discardPrestage(p) } }
+
+    private func discardPrestage(_ p: Pre) {
+        guard pre?.id == p.id else { return }
+        pre = nil
+        holdStages = false
+        p.streamed.setPrefix(.failure(CancellationError()))
+        p.streamed.setTail(.failure(CancellationError()))
+        p.prefixTask?.cancel()
+        p.installTask?.cancel()
+        DeviceInstallationManager.shared.releaseWorkflow(p.id)
+        observer = nil
+        try? FileManager.default.removeItem(at: p.dir)
+        stage = .idle; job = nil
+    }
+
+    private func finishPrestaged(_ p: Pre, signed: URL, bundleID: String, name: String, version: String) async throws {
+        // From here on the clock shows only what happens after signing.
+        holdStages = false
+        marks = []; timings = []
+        stage = .idle
+        enter(.packing)
+        let tailURL = p.dir.appendingPathComponent("tail.bin")
+        do {
+            let prefix = try await p.prefixTask!.value
+            let original = p.original
+            _ = try await Task.detached(priority: .userInitiated) {
+                try ZipDelta.repack(signed: signed, original: original, to: tailURL, prefix: prefix)
+            }.value
+        } catch {
+            p.streamed.setTail(.failure(error))
+            throw error
+        }
+        try Task.checkCancellation()
+        enter(.uploading)
+        p.streamed.setTail(.success(tailURL))
+        do {
+            try await p.installTask!.value
+            progress = 1
+            finishTimings()
+            AppAutoUpdater.shared.recordInstalled(bundleID: bundleID, name: name, version: version)
+            stage = .done
+            ZefvVPS.report(bundle: bundleID, version: version, name: name, stage: "installed")
+        } catch is CancellationError {
+            stage = .idle; job = nil
+            pre = nil
+            DeviceInstallationManager.shared.releaseWorkflow(p.id); observer = nil
+            try? FileManager.default.removeItem(at: p.dir)
+            throw CancellationError()
+        } catch {
+            // A device/installer error is final: don't retry a commit iOS may have seen.
+            stage = .failed(error.localizedDescription)
+            pre = nil
+            DeviceInstallationManager.shared.releaseWorkflow(p.id); observer = nil
+            try? FileManager.default.removeItem(at: p.dir)
+            throw FinalInstallError(underlying: error)
+        }
+        pre = nil
+        DeviceInstallationManager.shared.releaseWorkflow(p.id)
+        observer = nil
+        try? FileManager.default.removeItem(at: p.dir)
+    }
+
+    /// A failure after the install reached iOS — the normal install path must not run again.
+    private struct FinalInstallError: LocalizedError {
+        let underlying: Error
+        var errorDescription: String? { underlying.localizedDescription }
     }
 
     /// Smaller copy of a signed IPA in a temp folder, or nil if it's small / not worth it.

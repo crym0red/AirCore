@@ -116,7 +116,7 @@ final class DeviceInstallationManager: ObservableObject {
     }
 
     func install(at url: URL, viewModel: InstallerStatusViewModel, suspend: Bool,
-                 mode: DeviceConnectionMode, bundleIdentifier: String? = nil,
+                 mode: DeviceConnectionMode, bundleIdentifier: String? = nil, streamed: StreamedIPA? = nil,
                  isCurrent: @escaping () -> Bool = { true }) async throws {
         let id = UUID()
         vpnReconnect.beginDeviceWork()
@@ -156,7 +156,7 @@ final class DeviceInstallationManager: ObservableObject {
         do {
             try Task.checkCancellation()
             let proxy = InstallationProxy(viewModel: viewModel)
-            try await proxy.install(at: url, suspend: suspend, isCurrent: isCurrent)
+            try await proxy.install(at: url, suspend: suspend, streamed: streamed, isCurrent: isCurrent)
         } catch {
             // A rejected app does not invalidate a working device connection.
             // Other failed attempts must not reset the VPN beneath peers.

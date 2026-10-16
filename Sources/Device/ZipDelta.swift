@@ -35,10 +35,52 @@ nonisolated enum ZipDelta {
         var offset: UInt32
     }
 
+    /// Bytes that can be uploaded before signing finishes: original files that signing never touches.
+    struct Prefix {
+        struct Rec { var entry: Entry; var offset: UInt32 }
+        var url: URL
+        var length: UInt64
+        var recs: [String: Rec]
+    }
+
+    /// Files signing leaves alone: not Mach-O (no extension / dylib), not plists, not the signature, not the icon.
+    private static func isStable(_ e: Entry) -> Bool {
+        guard !e.name.hasSuffix("/"), e.uncomp >= 256, e.flags & 0x1 == 0, e.method == 0 || e.method == 8 else { return false }
+        let file = (e.name as NSString).lastPathComponent
+        let ext = (file as NSString).pathExtension.lowercased()
+        if ext.isEmpty || ["dylib", "so", "plist", "mobileprovision", "a", "o"].contains(ext) { return false }
+        if e.name.contains("_CodeSignature/") || file == "CodeResources" || e.name.contains("AppIcon") { return false }
+        return true
+    }
+
+    /// Writes the compressed bytes of every stable original file to `out` (zip local entries, no directory).
+    static func stage(original: URL, to out: URL) throws -> Prefix {
+        let list = try entries(of: original)
+        let fm = FileManager.default
+        try? fm.removeItem(at: out)
+        fm.createFile(atPath: out.path, contents: nil)
+        let input = try FileHandle(forReadingFrom: original)
+        let output = try FileHandle(forWritingTo: out)
+        defer { try? input.close(); try? output.close() }
+        var pos: UInt64 = 0
+        var recs: [String: Prefix.Rec] = [:]
+        for e in list where isStable(e) {
+            guard pos < 3_000_000_000 else { break }
+            let start = pos
+            let dataStart = try dataOffset(of: e, in: input)
+            try write(localHeader(name: e.nameData, flags: e.flags & 0x0800, method: e.method, time: e.time, date: e.date,
+                                  crc: e.crc, comp: e.comp, uncomp: e.uncomp), to: output, pos: &pos)
+            try copy(from: input, offset: dataStart, length: UInt64(e.comp), to: output, pos: &pos)
+            recs[e.name] = Prefix.Rec(entry: e, offset: UInt32(start))
+        }
+        guard !recs.isEmpty else { throw Failure("Nothing to stage.") }
+        return Prefix(url: out, length: pos, recs: recs)
+    }
+
     /// Writes `out`: the signed IPA's files, with unchanged files copied compressed from `original`.
     /// Returns the number of bytes that were copied through without recompression.
     @discardableResult
-    static func repack(signed: URL, original: URL, to out: URL) throws -> Int64 {
+    static func repack(signed: URL, original: URL, to out: URL, prefix: Prefix? = nil) throws -> Int64 {
         let signedEntries = try entries(of: signed)
         let originalEntries = try entries(of: original)
         guard signedEntries.count < 65_535 else { throw Failure("Too many files for the simple zip writer.") }
@@ -54,13 +96,15 @@ nonisolated enum ZipDelta {
         defer { try? signedIn.close(); try? originalIn.close(); try? output.close() }
 
         var central = Data()
-        var pos: UInt64 = 0
+        let base = prefix?.length ?? 0          // with a prefix, `out` holds only the part after it
+        var pos: UInt64 = base
         var copied: Int64 = 0
+        var usedPrefix = 0
 
         for e in signedEntries {
             guard pos < 3_500_000_000 else { throw Failure("IPA too large for the simple zip writer.") }
             guard e.method == 0 else { throw Failure("Signed IPA is already compressed.") }
-            let headerOffset = pos
+            var headerOffset = pos
             let isDir = e.name.hasSuffix("/")
             var method: UInt16 = 0
             var crc = e.crc
@@ -68,7 +112,15 @@ nonisolated enum ZipDelta {
             let uncomp = e.uncomp
             let utf8Flag = e.flags & 0x0800
 
-            if let o = originalByName[e.name], !isDir, uncomp > 0,
+            if let rec = prefix?.recs[e.name] {
+                // Already uploaded as part of the prefix: it must be exactly what signing produced.
+                guard !isDir, rec.entry.crc == e.crc, rec.entry.uncomp == e.uncomp else {
+                    throw Failure("Pre-uploaded file changed while signing: \(e.name)")
+                }
+                headerOffset = UInt64(rec.offset)
+                method = rec.entry.method; comp = rec.entry.comp; crc = rec.entry.crc
+                copied += Int64(comp); usedPrefix += 1
+            } else if let o = originalByName[e.name], !isDir, uncomp > 0,
                o.crc == e.crc, o.uncomp == e.uncomp, (o.method == 0 || o.method == 8), o.flags & 0x1 == 0 {
                 // Unchanged file: copy the original's compressed bytes as they are.
                 method = o.method; comp = o.comp; crc = o.crc
@@ -95,9 +147,9 @@ nonisolated enum ZipDelta {
                 pos += written
                 guard written < 0xFFFF_FFFF else { throw Failure("Compressed file too large.") }
                 comp = UInt32(written)
-                try output.seek(toOffset: headerOffset + 18)
+                try output.seek(toOffset: headerOffset - base + 18)
                 try output.write(contentsOf: le32(comp))
-                try output.seek(toOffset: pos)
+                try output.seek(toOffset: pos - base)
             }
 
             // Central directory record (permissions/attributes come from the signed zip).
@@ -112,6 +164,7 @@ nonisolated enum ZipDelta {
             central.append(e.nameData)
         }
 
+        if let prefix, usedPrefix != prefix.recs.count { throw Failure("Pre-uploaded files were removed while signing.") }
         let cdOffset = pos
         guard cdOffset < 0xFFFF_FFFF else { throw Failure("IPA too large for the simple zip writer.") }
         try output.write(contentsOf: central)
