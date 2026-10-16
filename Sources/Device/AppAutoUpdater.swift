@@ -335,9 +335,9 @@ final class AppAutoUpdater: ObservableObject {
     private func notify(_ text: String) {
         let c = UNMutableNotificationContent()
         c.title = "AirShare"; c.body = text; c.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(
-            identifier: "airshare.appupdates", content: c,
-            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)))
+        let request = UNNotificationRequest(identifier: "airshare.appupdates", content: c,
+                                            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false))
+        Task { try? await UNUserNotificationCenter.current().add(request) }
     }
 
     private static func isNewer(_ lhs: String, than rhs: String) -> Bool {

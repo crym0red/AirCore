@@ -71,8 +71,9 @@ final class NativeBatchInstaller: ObservableObject {
             c.title = "AirShare"
             c.body = failedCount == 0 ? "Installed \(doneCount) apps" : "Installed \(doneCount) apps, \(failedCount) failed"
             c.sound = .default
-            UNUserNotificationCenter.current().add(UNNotificationRequest(
-                identifier: "airshare.batch", content: c, trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)))
+            let request = UNNotificationRequest(identifier: "airshare.batch", content: c,
+                                                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false))
+            Task { try? await UNUserNotificationCenter.current().add(request) }
             UINotificationFeedbackGenerator().notificationOccurred(failedCount == 0 ? .success : .warning)
         }
     }
