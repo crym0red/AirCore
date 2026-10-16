@@ -1771,116 +1771,130 @@ private struct NativeInstallScreen: View {
         installer.timings.isEmpty ? "—" : String(format: "%.1f s", installer.timings.reduce(0) { $0 + $1.seconds })
     }
 
+    private var accent2: Color { Color(red: 1.0, green: 0.30, blue: 0.0) }
+    private var accentGradient: LinearGradient {
+        LinearGradient(colors: [Theme.accent, accent2], startPoint: .leading, endPoint: .trailing)
+    }
+    private let panel = Color(red: 0.063, green: 0.063, blue: 0.071)
+    private let hairline = Color.white.opacity(0.08)
+
     private var dashboard: some View {
         ScrollView {
             VStack(spacing: 14) {
                 header
-                deviceCard
+                heroCard
                 if !linked || manager.setupNotice != nil || installer.job != nil { setupCard }
-                connectionCard
-                menuCard
-                statusCard
+                methodCard
+                actionGrid
+                lastInstallCard
                 tipCard
                 footerCard
             }
-            .padding(.horizontal, 16).padding(.bottom, 30)
+            .padding(.horizontal, 16).padding(.bottom, 30).padding(.top, 6)
         }
         .background(
             ZStack {
-                Theme.bg
-                RadialGradient(colors: [Theme.accent.opacity(0.22), .clear], center: .topTrailing, startRadius: 0, endRadius: 460)
-                RadialGradient(colors: [Theme.accent.opacity(0.10), .clear], center: .bottomLeading, startRadius: 0, endRadius: 380)
+                Color(red: 0.027, green: 0.031, blue: 0.039)
+                RadialGradient(colors: [Theme.accent.opacity(0.33), .clear], center: .topTrailing, startRadius: 0, endRadius: 330)
+                RadialGradient(colors: [Theme.accent.opacity(0.15), .clear], center: .bottomLeading, startRadius: 0, endRadius: 330)
             }.ignoresSafeArea()
         )
         .toolbar(.hidden, for: .navigationBar)
     }
 
     private var header: some View {
-        VStack(spacing: 6) {
-            ZStack {
-                Text("Connection Controller").font(.system(size: 20, weight: .semibold)).foregroundStyle(Theme.text)
-                HStack {
-                    Button { dismiss() } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold))
-                            Text("Settings").font(.system(size: 17))
-                        }.foregroundStyle(Theme.accent)
-                    }
-                    Spacer()
-                    Image("aircore_logo").resizable().scaledToFit().frame(width: 52, height: 52)
-                        .shadow(color: Theme.accent.opacity(0.45), radius: 10)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button { dismiss() } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "chevron.left").font(.system(size: 17, weight: .bold))
+                        Text("Settings").font(.system(size: 16, weight: .semibold))
+                    }.foregroundStyle(Theme.accent).frame(minHeight: 44)
                 }
+                Spacer()
+                Image("aircore_logo").resizable().scaledToFit().frame(width: 56, height: 56)
+                    .shadow(color: Theme.accent.opacity(0.55), radius: 12)
             }
-            Text("Manage your local VPN, device pairing and connection settings for native installation.")
-                .font(.subheadline).foregroundStyle(Theme.subtle).multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+            Text("Connection\nController").font(.system(size: 30, weight: .bold, design: .rounded))
+                .foregroundStyle(Theme.text).lineSpacing(-2)
+            Text("Your local VPN, device pairing and the route native installs travel.")
+                .font(.subheadline).foregroundStyle(Theme.subtle).frame(maxWidth: 290, alignment: .leading)
         }
-        .padding(.top, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func card<C: View>(glow: Bool = false, @ViewBuilder _ c: () -> C) -> some View {
-        c().padding(14).frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(LinearGradient(colors: [Theme.card, Theme.card.opacity(0.7)], startPoint: .top, endPoint: .bottom))
-            )
-            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(glow ? Theme.accent.opacity(0.85) : Color.white.opacity(0.07), lineWidth: glow ? 1.4 : 1))
-            .shadow(color: glow ? Theme.accent.opacity(0.25) : .clear, radius: 12)
+    private func panelBox<C: View>(radius: CGFloat = 22, stroke: Color? = nil, glow: Bool = false, pad: CGFloat = 16,
+                                   @ViewBuilder _ c: () -> C) -> some View {
+        c().padding(pad).frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(panel))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).stroke(stroke ?? hairline, lineWidth: 1))
+            .shadow(color: glow ? Theme.accent.opacity(0.18) : .clear, radius: 14)
     }
 
-    private func iconTile(_ name: String, tint: Color = Theme.accent) -> some View {
-        Image(systemName: name).font(.system(size: 22, weight: .semibold)).foregroundStyle(tint)
-            .frame(width: 52, height: 52)
-            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1))
-    }
-
-    private var deviceCard: some View {
-        card {
-            VStack(spacing: 14) {
-                HStack(spacing: 14) {
-                    Image(systemName: "iphone.gen3").font(.system(size: 44, weight: .light)).foregroundStyle(Theme.accent)
-                        .frame(width: 70, height: 92)
-                        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.black.opacity(0.45)))
-                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.white.opacity(0.12), lineWidth: 1))
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(deviceModel).font(.system(size: 22, weight: .semibold)).foregroundStyle(Theme.text)
-                        Text("iOS \(UIDevice.current.systemVersion)  •  Developer Mode").font(.subheadline).foregroundStyle(Theme.subtle)
-                        HStack(spacing: 6) {
-                            Circle().fill(linked ? Color.green : Color.orange).frame(width: 9, height: 9)
-                            Text(linked ? "Connected" : "Not connected").font(.subheadline.weight(.medium))
-                                .foregroundStyle(linked ? Color.green : Color.orange)
-                        }
-                        .padding(.horizontal, 12).padding(.vertical, 5)
-                        .background(Capsule().fill((linked ? Color.green : Color.orange).opacity(0.15)))
-                        .overlay(Capsule().stroke((linked ? Color.green : Color.orange).opacity(0.5), lineWidth: 1))
+    private var heroCard: some View {
+        VStack(spacing: 18) {
+            HStack(spacing: 14) {
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .fill(LinearGradient(colors: [Theme.accent, accent2], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 56, height: 76)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black).padding(3)
+                            .overlay(alignment: .top) { Capsule().fill(Color.white.opacity(0.1)).frame(width: 20, height: 5).padding(.top, 8) }
+                    )
+                    .shadow(color: Theme.accent.opacity(0.35), radius: 12, y: 6)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(deviceModel).font(.system(size: 21, weight: .semibold, design: .rounded)).foregroundStyle(Theme.text)
+                    Text("iOS \(UIDevice.current.systemVersion) · Developer Mode").font(.footnote).foregroundStyle(Theme.subtle)
+                    HStack(spacing: 7) {
+                        Circle().fill(linked ? Color.green : Color.orange).frame(width: 8, height: 8)
+                            .overlay(Circle().stroke((linked ? Color.green : Color.orange).opacity(0.25), lineWidth: 4))
+                        Text(linked ? "Connected" : "Not connected").font(.footnote.weight(.semibold))
+                            .foregroundStyle(linked ? Color.green : Color.orange)
                     }
-                    Spacer(minLength: 0)
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .background(Capsule().fill((linked ? Color.green : Color.orange).opacity(0.12)))
+                    .overlay(Capsule().stroke((linked ? Color.green : Color.orange).opacity(0.35), lineWidth: 1))
+                    .padding(.top, 5)
                 }
-                HStack(spacing: 0) {
-                    pill("link", "Pairing", linked ? "Active" : "None", linked)
-                    Divider().frame(height: 44).overlay(Color.white.opacity(0.08))
-                    pill("shield.fill", "VPN", linked ? "Running" : "Stopped", linked)
-                    Divider().frame(height: 44).overlay(Color.white.opacity(0.08))
-                    pill("wifi", "Tunnel", linked ? "Connected" : "Idle", linked)
-                    Divider().frame(height: 44).overlay(Color.white.opacity(0.08))
-                    pill("iphone", "Device", linked ? "Reachable" : "Unknown", linked)
-                }
-                .padding(.vertical, 12)
-                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.black.opacity(0.25)))
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                Spacer(minLength: 0)
+            }
+            pipeline
+        }
+        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 26, style: .continuous)
+            .fill(LinearGradient(colors: [Color(red: 0.09, green: 0.075, blue: 0.06), Color(red: 0.05, green: 0.05, blue: 0.06)],
+                                 startPoint: .topLeading, endPoint: .bottomTrailing)))
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1))
+    }
+
+    private var pipeline: some View {
+        ZStack(alignment: .top) {
+            GeometryReader { g in
+                let inset = g.size.width / 8
+                Capsule().fill(accentGradient).frame(height: 3)
+                    .padding(.horizontal, inset).offset(y: 21)
+                    .opacity(linked ? 1 : 0.25)
+            }
+            .frame(height: 44)
+            HStack(alignment: .top, spacing: 0) {
+                node("link", "Pairing", linked ? "Active" : "None")
+                node("shield.fill", "VPN", linked ? "Running" : "Stopped")
+                node("wifi", "Tunnel", linked ? "Connected" : "Idle")
+                node("iphone", "Device", linked ? "Reachable" : "Unknown")
             }
         }
     }
 
-    private func pill(_ icon: String, _ title: String, _ value: String, _ ok: Bool) -> some View {
-        VStack(spacing: 6) {
-            Image(systemName: icon).font(.system(size: 22, weight: .semibold)).foregroundStyle(Theme.accent)
-            Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
-            HStack(spacing: 5) {
-                Circle().fill(ok ? Color.green : Color.orange).frame(width: 7, height: 7)
-                Text(value).font(.caption).foregroundStyle(Theme.subtle).lineLimit(1).minimumScaleFactor(0.8)
+    private func node(_ icon: String, _ title: String, _ value: String) -> some View {
+        VStack(spacing: 9) {
+            Image(systemName: icon).font(.system(size: 19, weight: .semibold)).foregroundStyle(Theme.accent)
+                .frame(width: 44, height: 44)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(red: 0.078, green: 0.067, blue: 0.055)))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(linked ? Theme.accent : Color.white.opacity(0.15), lineWidth: 1.5))
+            VStack(spacing: 2) {
+                Text(title).font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.text)
+                Text(value).font(.system(size: 11.5)).foregroundStyle(linked ? Color.green : Color.orange).lineLimit(1).minimumScaleFactor(0.8)
             }
         }
         .frame(maxWidth: .infinity)
@@ -1888,7 +1902,7 @@ private struct NativeInstallScreen: View {
 
     /// Pairing code / progress / errors while setup is running or has failed.
     private var setupCard: some View {
-        card {
+        panelBox {
             VStack(alignment: .leading, spacing: 10) {
                 switch manager.phase {
                 case .pairing:
@@ -1910,7 +1924,7 @@ private struct NativeInstallScreen: View {
                     Text(message).font(.footnote).foregroundStyle(.red)
                     Button("Retry Setup") { Task { await manager.setUp() } }.disabled(busy)
                 case .idle:
-                    Text("Not set up yet. Tap Setup Connection below.").font(.footnote).foregroundStyle(Theme.subtle)
+                    Text("Not set up yet. Tap Setup below.").font(.footnote).foregroundStyle(Theme.subtle)
                 default: EmptyView()
                 }
                 if let notice = manager.setupNotice { Text(notice).font(.footnote).foregroundStyle(.orange) }
@@ -1922,162 +1936,184 @@ private struct NativeInstallScreen: View {
         }
     }
 
-    private var connectionCard: some View {
-        NavigationLink { connectionDetail } label: {
-            card(glow: true) {
-                HStack(alignment: .top, spacing: 14) {
-                    iconTile("arrow.triangle.2.circlepath")
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Text("Connection").font(.system(size: 20, weight: .semibold)).foregroundStyle(Theme.text)
-                            Spacer()
-                            Text(method == "native" ? "Native" : "OTA").font(.subheadline.weight(.medium)).foregroundStyle(Theme.accent)
-                                .padding(.horizontal, 14).padding(.vertical, 5)
-                                .overlay(Capsule().stroke(Theme.accent.opacity(0.8), lineWidth: 1))
+    private var methodCard: some View {
+        panelBox(stroke: Theme.accent.opacity(0.4), glow: true) {
+            VStack(alignment: .leading, spacing: 12) {
+                NavigationLink { connectionDetail } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Install method").font(.system(size: 17, weight: .semibold, design: .rounded)).foregroundStyle(Theme.text)
+                            Text(manager.mode == .builtIn ? "Built-in connection & pairing" : "Manual setup")
+                                .font(.footnote).foregroundStyle(Theme.subtle)
                         }
-                        Text(manager.mode.title.replacingOccurrences(of: "Built-in Connection", with: "Built-in Connection & Pairing"))
-                            .font(.subheadline).foregroundStyle(Theme.subtle)
-                        Text(linked ? "Your device is paired and ready for native installation."
-                                    : "Pair this device to enable native installation.")
-                            .font(.subheadline).foregroundStyle(Theme.text.opacity(0.85)).padding(.top, 4)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.subtle)
                     }
-                    Image(systemName: "chevron.right").foregroundStyle(Theme.subtle).padding(.top, 14)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                HStack(spacing: 0) {
+                    segment("Native", on: method == "native") { method = "native" }
+                    segment("OTA", on: method != "native") { method = "ota" }
+                }
+                .padding(4)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(red: 0.027, green: 0.031, blue: 0.039)))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                .disabled(busy)
+                Text(method == "native"
+                     ? (linked ? "Paired and ready — installs go straight to this device with no Apple prompt."
+                               : "Pair this device to enable native installs with no Apple prompt.")
+                     : "Serves the signed IPA over HTTPS and hands iOS an itms-services link.")
+                    .font(.footnote).foregroundStyle(Theme.text.opacity(0.8))
             }
+        }
+    }
+
+    private func segment(_ title: String, on: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 14, weight: .bold))
+                .foregroundStyle(on ? Color(red: 0.1, green: 0.055, blue: 0.016) : Theme.subtle)
+                .frame(maxWidth: .infinity, minHeight: 40)
+                .background(RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(on ? AnyShapeStyle(LinearGradient(colors: [Theme.accent, accent2.opacity(0.9)], startPoint: .leading, endPoint: .trailing))
+                             : AnyShapeStyle(Color.clear)))
         }
         .buttonStyle(.plain)
     }
 
-    private func menuRow(icon: String, title: String, subtitle: String, value: String? = nil, valueTint: Color = .green,
-                         tint: Color = Theme.accent, titleTint: Color = Theme.text) -> some View {
-        HStack(spacing: 14) {
-            iconTile(icon, tint: tint)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.system(size: 19, weight: .semibold)).foregroundStyle(titleTint)
-                Text(subtitle).font(.subheadline).foregroundStyle(Theme.subtle).lineLimit(2)
+    private func tile<C: View>(icon: String, title: String, subtitle: String, tint: Color = Theme.accent, titleTint: Color = Theme.text,
+                               fill: Color? = nil, border: Color? = nil, @ViewBuilder badge: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                Image(systemName: icon).font(.system(size: 17, weight: .semibold)).foregroundStyle(tint)
+                    .frame(width: 38, height: 38)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(tint.opacity(0.15)))
+                Spacer(minLength: 0)
+                badge()
             }
-            Spacer(minLength: 6)
-            if let value { Text(value).font(.system(size: 16, weight: .semibold)).foregroundStyle(valueTint) }
-            Image(systemName: "chevron.right").foregroundStyle(Theme.subtle)
-        }
-        .padding(.vertical, 10).contentShape(Rectangle())
-    }
-
-    private var menuCard: some View {
-        card {
-            VStack(spacing: 0) {
-                NavigationLink { restoreDetail } label: {
-                    menuRow(icon: "shield", title: "VPN", subtitle: "Local packet-tunnel provider",
-                            value: linked ? "Enabled" : "Off", valueTint: linked ? .green : .orange)
-                }
-                Divider().overlay(Color.white.opacity(0.08))
-                Button { Task { await manager.setUp() } } label: {
-                    menuRow(icon: "gearshape", title: "Setup Connection", subtitle: "Pair device and configure VPN")
-                }.disabled(busy)
-                Divider().overlay(Color.white.opacity(0.08))
-                NavigationLink { restoreDetail } label: {
-                    menuRow(icon: "arrow.clockwise", title: "Restore VPN", subtitle: "Quick reconnect (requires pairing)")
-                }
-                Divider().overlay(Color.white.opacity(0.08))
-                NavigationLink { updatesDetail } label: {
-                    menuRow(icon: "arrow.triangle.2.circlepath.circle", title: "App Updates",
-                            subtitle: "Auto-update, skip, roll back, re-sign",
-                            value: autoApps ? "On" : "Off", valueTint: autoApps ? .green : Theme.subtle)
-                }
-                if manager.mode == .builtIn {
-                    Divider().overlay(Color.white.opacity(0.08))
-                    Button { confirmReset = true } label: {
-                        menuRow(icon: "trash", title: "Forget Built-in Pairing", subtitle: "Remove pairing record and disconnect",
-                                tint: .red, titleTint: .red)
-                    }.disabled(busy)
-                }
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private var statusCard: some View {
-        card {
-            VStack(spacing: 12) {
-                HStack(spacing: 14) {
-                    iconTile("checkmark.circle")
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Connection Status").font(.system(size: 19, weight: .semibold)).foregroundStyle(Theme.text)
-                        Text(linked ? "All systems operational" : "Not connected").font(.subheadline).foregroundStyle(Theme.subtle)
-                    }
-                    Spacer(minLength: 6)
-                    Button { Task { await manager.setUp() } } label: {
-                        Label("Test Connection", systemImage: "waveform.path.ecg").font(.subheadline.weight(.medium))
-                            .foregroundStyle(Theme.accent).padding(.horizontal, 12).padding(.vertical, 10)
-                            .overlay(Capsule().stroke(Theme.accent.opacity(0.7), lineWidth: 1))
-                    }.buttonStyle(.plain).disabled(busy)
-                }
-                Divider().overlay(Color.white.opacity(0.08))
-                HStack(spacing: 0) {
-                    stat("clock", "Last install", totalTiming)
-                    Divider().frame(height: 40).overlay(Color.white.opacity(0.08))
-                    stat("arrow.up.circle", "Upload", timing("Upload"))
-                    Divider().frame(height: 40).overlay(Color.white.opacity(0.08))
-                    stat("arrow.down.app", "Install", timing("Install"))
-                }
-            }
-        }
-    }
-
-    private func stat(_ icon: String, _ label: String, _ value: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 20)).foregroundStyle(Theme.accent.opacity(0.8))
             VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(.caption).foregroundStyle(Theme.subtle)
-                Text(value).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.text)
+                Text(title).font(.system(size: 15, weight: .bold)).foregroundStyle(titleTint)
+                Text(subtitle).font(.system(size: 12)).foregroundStyle(Theme.subtle).lineLimit(1).minimumScaleFactor(0.85)
             }
         }
-        .frame(maxWidth: .infinity)
+        .padding(14).frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(fill ?? panel))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(border ?? hairline, lineWidth: 1))
+        .contentShape(Rectangle())
+    }
+
+    private var actionGrid: some View {
+        let cols = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+        return LazyVGrid(columns: cols, spacing: 10) {
+            Button { Task { await manager.setUp() } } label: {
+                tile(icon: "bolt.fill", title: "Setup", subtitle: "Pair & configure VPN") { EmptyView() }
+            }.buttonStyle(.plain).disabled(busy)
+
+            NavigationLink { restoreDetail } label: {
+                tile(icon: "arrow.triangle.2.circlepath", title: "Restore VPN", subtitle: "Quick reconnect") { EmptyView() }
+            }.buttonStyle(.plain)
+
+            NavigationLink { updatesDetail } label: {
+                tile(icon: "arrow.down.circle", title: "App updates", subtitle: "Skip · roll back · re-sign") {
+                    Text(autoApps ? "Auto on" : "Auto off").font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(autoApps ? Color.green : Theme.subtle)
+                        .padding(.horizontal, 9).padding(.vertical, 3)
+                        .background(Capsule().fill((autoApps ? Color.green : Color.white).opacity(0.12)))
+                }
+            }.buttonStyle(.plain)
+
+            Button { confirmReset = true } label: {
+                tile(icon: "trash", title: "Forget pairing", subtitle: "Remove record",
+                     tint: Color(red: 1, green: 0.42, blue: 0.38), titleTint: Color(red: 1, green: 0.42, blue: 0.38),
+                     fill: Color(red: 0.086, green: 0.043, blue: 0.043), border: Color.red.opacity(0.22)) { EmptyView() }
+            }.buttonStyle(.plain).disabled(busy || manager.mode != .builtIn)
+        }
+    }
+
+    private var lastInstallCard: some View {
+        let t = installer.timings
+        let total = t.reduce(0) { $0 + $1.seconds }
+        let colors: [String: Color] = ["Pack": Color(red: 0.6, green: 0.85, blue: 1), "Connect": Color(red: 1, green: 0.82, blue: 0.37),
+                                       "Upload": Theme.accent, "Install": Color(red: 1, green: 0.48, blue: 0.35)]
+        return panelBox {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Last install").font(.system(size: 17, weight: .semibold, design: .rounded)).foregroundStyle(Theme.text)
+                    Spacer()
+                    if t.isEmpty {
+                        Text("No installs yet").font(.footnote).foregroundStyle(Theme.subtle)
+                    } else {
+                        (Text(String(format: "%.1f", total)).font(.system(size: 22, weight: .bold, design: .rounded)).foregroundColor(Theme.accent)
+                        + Text(" s").font(.footnote.weight(.semibold)).foregroundColor(Theme.subtle))
+                    }
+                }
+                GeometryReader { g in
+                    HStack(spacing: 3) {
+                        ForEach(Array(t.enumerated()), id: \.offset) { _, item in
+                            Capsule().fill(colors[item.label] ?? Theme.accent)
+                                .frame(width: max(6, (g.size.width - CGFloat(max(t.count - 1, 0)) * 3) * CGFloat(item.seconds / max(total, 0.001))))
+                        }
+                        if t.isEmpty { Capsule().fill(Color.white.opacity(0.07)) }
+                    }
+                }
+                .frame(height: 12)
+                if !t.isEmpty {
+                    HStack(alignment: .top, spacing: 8) {
+                        ForEach(Array(t.enumerated()), id: \.offset) { _, item in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Circle().fill(colors[item.label] ?? Theme.accent).frame(width: 8, height: 8)
+                                    Text(item.label).font(.caption).foregroundStyle(Theme.subtle)
+                                }
+                                Text(String(format: "%.1f s", item.seconds)).font(.system(size: 16, weight: .bold)).foregroundStyle(Theme.text)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private var tipCard: some View {
-        HStack(spacing: 14) {
-            iconTile("lightbulb")
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Keep Your Connection Healthy").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
-                Text("Re-pair if the device changes, Developer Mode resets, or the tunnel stops working.")
-                    .font(.caption).foregroundStyle(Theme.subtle)
-            }
+        HStack(spacing: 12) {
+            Image(systemName: "lightbulb").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.accent)
+                .frame(width: 38, height: 38)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black.opacity(0.5)))
+            (Text("Keep it healthy. ").bold().foregroundColor(Theme.text)
+             + Text("Re-pair if the device changes or Developer Mode resets.").foregroundColor(Theme.text.opacity(0.8)))
+                .font(.system(size: 12.5))
             Spacer(minLength: 4)
             NavigationLink { guideDetail } label: {
-                Label("View Guide", systemImage: "book").font(.footnote.weight(.medium)).foregroundStyle(Theme.accent)
-                    .padding(.horizontal, 12).padding(.vertical, 10)
-                    .background(Capsule().fill(Theme.accent.opacity(0.14)))
+                Text("Guide").font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.accent).frame(minHeight: 44)
             }
         }
         .padding(14)
-        .background(RoundedRectangle(cornerRadius: 22, style: .continuous)
-            .fill(LinearGradient(colors: [Theme.accent.opacity(0.22), Theme.card], startPoint: .trailing, endPoint: .leading)))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Theme.accent.opacity(0.35), lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .fill(LinearGradient(colors: [Theme.accent.opacity(0.2), panel], startPoint: .leading, endPoint: .trailing)))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Theme.accent.opacity(0.28), lineWidth: 1))
     }
 
     private var footerCard: some View {
-        card {
-            HStack(spacing: 0) {
-                HStack(alignment: .top, spacing: 10) {
-                    Circle().fill(linked ? Color.green : Color.orange).frame(width: 12, height: 12).padding(.top, 4)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(linked ? "Device Online" : "Device Offline").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
-                        Text(manager.mode == .builtIn ? "Built-in pairing" : "Manual pairing").font(.footnote).foregroundStyle(Theme.subtle)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Divider().frame(height: 40).overlay(Color.white.opacity(0.08))
-                HStack(alignment: .top, spacing: 10) {
-                    Circle().fill(linked ? Color.green : Color.orange).frame(width: 12, height: 12).padding(.top, 4)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(linked ? "VPN Tunnel Active" : "VPN Tunnel Idle").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
-                        Text("Local /32 (127.0.0.1)").font(.footnote).foregroundStyle(Theme.subtle)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 14)
+        HStack(alignment: .top, spacing: 0) {
+            footerItem(linked ? "Device online" : "Device offline", manager.mode == .builtIn ? "Built-in pairing" : "Manual pairing")
+            Rectangle().fill(hairline).frame(width: 1).padding(.vertical, 2)
+            footerItem(linked ? "VPN tunnel active" : "VPN tunnel idle", "Local · 127.0.0.1").padding(.leading, 16)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 14)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color(red: 0.05, green: 0.05, blue: 0.057)))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.white.opacity(0.06), lineWidth: 1))
+    }
+
+    private func footerItem(_ title: String, _ sub: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Circle().fill(linked ? Color.green : Color.orange).frame(width: 10, height: 10).padding(.top, 4)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.text)
+                Text(sub).font(.system(size: 12)).foregroundStyle(Theme.subtle)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Detail pages
