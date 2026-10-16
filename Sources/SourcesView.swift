@@ -565,8 +565,10 @@ struct SourcesView: View {
                         }
                     } else {
                     ForEach(store.sources) { s in
-                        NavigationLink(value: s) { sourceRow(s) }
-                            .disabled(editing)
+                        ZStack {
+                            sourceRow(s)
+                            NavigationLink(value: s) { EmptyView() }.opacity(0).disabled(editing)
+                        }
                             .opacity(1)
                             .listRowBackground(Color.black)
                             .listRowSeparatorTint(Theme.stroke)
@@ -690,6 +692,7 @@ private struct SourceDetailScreen: View {
     @State private var progress: Double = 0
     @State private var sort: Sort = .updated
     @State private var openGroup: AppGroup?
+    @State private var openNewsItem: SourceNews?
     @State private var visibleGroupCount = 6
 
     private enum Sort: String, CaseIterable { case updated = "Recently updated", name = "Name", size = "Size" }
@@ -815,6 +818,7 @@ private struct SourceDetailScreen: View {
         .onChange(of: sort) { _ in visibleGroupCount = 6; recompute(debounce: false) }
         .onChange(of: category) { _ in visibleGroupCount = 6; recompute(debounce: false) }
         .onChange(of: parsed?.apps.count) { _ in recompute(debounce: false) }
+        .sheet(item: $openNewsItem) { n in newsDetail(n) }
         .sheet(item: $openGroup) { g in
             AppDetailSheet(source: current, group: g)
                 .then { view in
@@ -949,9 +953,40 @@ private struct SourceDetailScreen: View {
         .buttonStyle(.plain)
     }
 
-    private func openNews(_ n: SourceNews) {
-        if let id = n.appID, let g = parsed?.group(bundle: id) { openGroup = g; return }
-        if let u = n.url { UIApplication.shared.open(u) }
+    private func openNews(_ n: SourceNews) { openNewsItem = n }
+
+    private func newsDetail(_ n: SourceNews) -> some View {
+        let tint = Color.fromTint(n.tintHex) ?? Theme.accent
+        let group = n.appID.flatMap { parsed?.group(bundle: $0) }
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                AsyncImage(url: n.imageURL) { phase in
+                    if let img = phase.image { img.resizable().scaledToFill() } else { tint.opacity(0.25) }
+                }
+                .frame(maxWidth: .infinity).frame(height: 220).clipped()
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(n.title).font(.system(size: 24, weight: .bold)).foregroundStyle(Theme.text)
+                    if !n.date.isEmpty { Text(n.date).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.subtle) }
+                    if !n.caption.isEmpty { Text(n.caption).font(.system(size: 16)).foregroundStyle(Theme.text.opacity(0.9)).fixedSize(horizontal: false, vertical: true) }
+                    if let g = group {
+                        Button { openNewsItem = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { openGroup = g } } label: {
+                            Text("View \(g.latest.name)").font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
+                                .frame(maxWidth: .infinity).padding(.vertical, 13).background(Theme.accent).clipShape(Capsule())
+                        }.padding(.top, 6)
+                    }
+                    if let u = n.url {
+                        Button { UIApplication.shared.open(u) } label: {
+                            Text("Open link").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.accent)
+                                .frame(maxWidth: .infinity).padding(.vertical, 13)
+                                .overlay(Capsule().stroke(Theme.accent, lineWidth: 1.5))
+                        }
+                    }
+                }
+                .padding(.horizontal, 18).padding(.bottom, 30)
+            }
+        }
+        .background(Color.black.ignoresSafeArea())
+        .preferredColorScheme(.dark)
     }
 
     private func appRow(_ g: AppGroup) -> some View {
