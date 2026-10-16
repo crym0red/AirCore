@@ -77,11 +77,15 @@ private struct IconRing: View {
     let side: CGFloat
     var body: some View {
         ZStack {
-            Image("aircore_logo").resizable().scaledToFit()
-                .padding(side * 0.12)
-                .background(Color.black)
-                .clipShape(RoundedRectangle(cornerRadius: side * 0.22, style: .continuous))
-                .padding(side * 0.1)
+            Group {
+                if let d = state.iconData, let ui = UIImage(data: d) {
+                    Image(uiImage: ui).resizable().scaledToFill()           // the app being installed
+                } else {
+                    Image("aircore_logo").resizable().scaledToFit().padding(side * 0.12).background(Color.black)
+                }
+            }
+            .frame(width: side * 0.8, height: side * 0.8)
+            .clipShape(RoundedRectangle(cornerRadius: side * 0.18, style: .continuous))
             Circle().stroke(Color.clear, lineWidth: max(2, side * 0.07))
             Circle().trim(from: 0, to: max(0.03, min(state.progress, 1)))
                 .stroke(stateColor(state), style: StrokeStyle(lineWidth: max(2, side * 0.07), lineCap: .round))

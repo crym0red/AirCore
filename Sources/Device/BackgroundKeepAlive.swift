@@ -386,11 +386,13 @@ final class BackgroundKeepAlive: ObservableObject {
         else if idleSince == nil { idleSince = Date() }
 
         let title: String, percent: Int, body: String, symbol: String
+        var iconURL: URL?
         let queue = InstallQueue.shared
         if queue.isRunning {
             title = queue.title
             percent = Int((queue.fraction * 100).rounded())
             body = queue.summary
+            iconURL = queue.current?.app.iconURL
             switch queue.current?.status {
             case .downloading?: symbol = "arrow.down.circle.fill"
             case .signing?: symbol = "signature"
@@ -401,15 +403,17 @@ final class BackgroundKeepAlive: ObservableObject {
             percent = Int((batch.fraction * 100).rounded())
             let current = batch.items.first { $0.status == .installing }?.entry.name
             body = current.map { "\(percent)% · \($0)" } ?? "\(percent)%"
+            iconURL = batch.items.first { $0.status == .installing }?.entry.iconURL
             symbol = "square.and.arrow.down.fill"
         } else if installer.isActive, let job = installer.job {
             title = "Installing \(job.name)"
             percent = Int((min(max(installer.progress, 0), 1) * 100).rounded())
             body = "\(percent)% · \(installer.stage.label.replacingOccurrences(of: "…", with: ""))"
+            iconURL = SignedStore.shared.entries.first { $0.bundleID == job.bundleID }?.iconURL
             symbol = installer.stage == .installing ? "square.and.arrow.down.fill" : "arrow.up.circle.fill"
         } else { return }
 
-        InstallLiveActivity.shared.update(.init(title: title, detail: body, progress: Double(percent) / 100, symbol: symbol))
+        InstallLiveActivity.shared.update(.init(title: title, detail: body, progress: Double(percent) / 100, symbol: symbol, iconURL: iconURL))
         guard UIApplication.shared.applicationState != .active else { lastPercent = -1; return }
 
         guard percent != lastPercent || body != lastBody else { return }
