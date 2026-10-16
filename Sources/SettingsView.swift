@@ -1733,56 +1733,396 @@ private struct NativeInstallScreen: View {
     @AppStorage(AppAutoUpdater.chargingOnlyKey) private var chargingOnly = false
     @AppStorage(AppAutoUpdater.certRefreshKey) private var certRefresh = false
     @State private var confirmReset = false
+    @Environment(\.dismiss) private var dismiss
 
     private var busy: Bool { manager.isBusy || installer.isActive }
 
     var body: some View {
         NavigationStack {
-            TableScreen(title: "Install Method", root: true) {
-                Section {
-                    Picker(selection: $method) {
-                        Label("OTA · itms-services", systemImage: "globe").tag("ota")
-                        Label("Native · built-in VPN", systemImage: "iphone.and.arrow.forward").tag("native")
-                    } label: {
-                        Label("Method", systemImage: "arrow.down.app.fill").foregroundStyle(Theme.text)
-                    }
-                    .pickerStyle(.menu).listRowBackground(Theme.card)
-                    .disabled(busy)
-                    TNote(text: method == "native"
-                          ? "Installs straight to this device over a local VPN and a device pairing — no AirShare domain, TLS cert or itms-services prompt. Needs a build signed with a profile that allows Network Extensions (packet-tunnel-provider)."
-                          : "Serves the signed IPA from the on-device HTTPS server and hands iOS an itms-services link.")
+            dashboard
+                .confirmationDialog("Forget this device's saved pairing?", isPresented: $confirmReset, titleVisibility: .visible) {
+                    Button("Forget Pairing", role: .destructive) { Task { await manager.resetPairing() } }
+                } message: {
+                    Text("The next native install will ask you to pair again.")
                 }
+        }
+    }
 
-                if method == "native" {
-                    Section {
-                        Picker(selection: $manager.mode) {
-                            ForEach(DeviceConnectionMode.allCases) { Text($0.title).tag($0) }
-                        } label: {
-                            Label("Connection", systemImage: "point.3.connected.trianglepath.dotted").foregroundStyle(Theme.text)
-                        }
-                        .pickerStyle(.menu).listRowBackground(Theme.card)
-                        .disabled(busy)
-                        TNote(text: manager.mode == .builtIn
-                              ? "Built-in manages a local VPN inside AirShare. Creating a pairing on-device needs iOS 27+, Developer Mode and Local Network access. The VPN may replace another active VPN."
-                              : "Manual uses an imported pairingFile.plist in AirShare's Documents folder and your own local VPN.")
+    // MARK: Connection Controller
+
+    private var linked: Bool { manager.phase == .ready || manager.phase == .configured }
+    private var deviceModel: String {
+        var u = utsname(); _ = uname(&u)
+        let id = withUnsafePointer(to: &u.machine) { $0.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) } }
+        let map = ["iPhone14,2": "iPhone 13 Pro", "iPhone14,3": "iPhone 13 Pro Max", "iPhone14,4": "iPhone 13 mini", "iPhone14,5": "iPhone 13",
+                   "iPhone14,7": "iPhone 14", "iPhone14,8": "iPhone 14 Plus", "iPhone15,2": "iPhone 14 Pro", "iPhone15,3": "iPhone 14 Pro Max",
+                   "iPhone15,4": "iPhone 15", "iPhone15,5": "iPhone 15 Plus", "iPhone16,1": "iPhone 15 Pro", "iPhone16,2": "iPhone 15 Pro Max",
+                   "iPhone17,1": "iPhone 16 Pro", "iPhone17,2": "iPhone 16 Pro Max", "iPhone17,3": "iPhone 16", "iPhone17,4": "iPhone 16 Plus",
+                   "iPhone17,5": "iPhone 16e", "iPhone18,1": "iPhone 17 Pro", "iPhone18,2": "iPhone 17 Pro Max", "iPhone18,3": "iPhone 17",
+                   "iPhone18,4": "iPhone Air"]
+        return map[id] ?? UIDevice.current.model
+    }
+
+    private func timing(_ label: String) -> String {
+        guard let t = installer.timings.first(where: { $0.label == label }) else { return "—" }
+        return String(format: "%.1f s", t.seconds)
+    }
+    private var totalTiming: String {
+        installer.timings.isEmpty ? "—" : String(format: "%.1f s", installer.timings.reduce(0) { $0 + $1.seconds })
+    }
+
+    private var dashboard: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                header
+                deviceCard
+                if !linked || manager.setupNotice != nil || installer.job != nil { setupCard }
+                connectionCard
+                menuCard
+                statusCard
+                tipCard
+                footerCard
+            }
+            .padding(.horizontal, 16).padding(.bottom, 30)
+        }
+        .background(
+            ZStack {
+                Theme.bg
+                RadialGradient(colors: [Theme.accent.opacity(0.22), .clear], center: .topTrailing, startRadius: 0, endRadius: 460)
+                RadialGradient(colors: [Theme.accent.opacity(0.10), .clear], center: .bottomLeading, startRadius: 0, endRadius: 380)
+            }.ignoresSafeArea()
+        )
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private var header: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                Text("Connection Controller").font(.system(size: 20, weight: .semibold)).foregroundStyle(Theme.text)
+                HStack {
+                    Button { dismiss() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold))
+                            Text("Settings").font(.system(size: 17))
+                        }.foregroundStyle(Theme.accent)
                     }
-
-                    Section {
-                        statusRows
-                        if manager.mode == .builtIn {
-                            TButton(title: "Forget Built-in Pairing", icon: "trash", role: .destructive, enabled: !busy) { confirmReset = true }
-                        }
-                    }
-
-                    if manager.mode == .builtIn { reconnectSection }
-
-                    appUpdateSection
+                    Spacer()
+                    Image("aircore_logo").resizable().scaledToFit().frame(width: 52, height: 52)
+                        .shadow(color: Theme.accent.opacity(0.45), radius: 10)
                 }
             }
-            .confirmationDialog("Forget this device's saved pairing?", isPresented: $confirmReset, titleVisibility: .visible) {
-                Button("Forget Pairing", role: .destructive) { Task { await manager.resetPairing() } }
-            } message: {
-                Text("The next native install will ask you to pair again.")
+            Text("Manage your local VPN, device pairing and connection settings for native installation.")
+                .font(.subheadline).foregroundStyle(Theme.subtle).multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+        }
+        .padding(.top, 6)
+    }
+
+    private func card<C: View>(glow: Bool = false, @ViewBuilder _ c: () -> C) -> some View {
+        c().padding(14).frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(LinearGradient(colors: [Theme.card, Theme.card.opacity(0.7)], startPoint: .top, endPoint: .bottom))
+            )
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(glow ? Theme.accent.opacity(0.85) : Color.white.opacity(0.07), lineWidth: glow ? 1.4 : 1))
+            .shadow(color: glow ? Theme.accent.opacity(0.25) : .clear, radius: 12)
+    }
+
+    private func iconTile(_ name: String, tint: Color = Theme.accent) -> some View {
+        Image(systemName: name).font(.system(size: 22, weight: .semibold)).foregroundStyle(tint)
+            .frame(width: 52, height: 52)
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 1))
+    }
+
+    private var deviceCard: some View {
+        card {
+            VStack(spacing: 14) {
+                HStack(spacing: 14) {
+                    Image(systemName: "iphone.gen3").font(.system(size: 44, weight: .light)).foregroundStyle(Theme.accent)
+                        .frame(width: 70, height: 92)
+                        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.black.opacity(0.45)))
+                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(deviceModel).font(.system(size: 22, weight: .semibold)).foregroundStyle(Theme.text)
+                        Text("iOS \(UIDevice.current.systemVersion)  •  Developer Mode").font(.subheadline).foregroundStyle(Theme.subtle)
+                        HStack(spacing: 6) {
+                            Circle().fill(linked ? Color.green : Color.orange).frame(width: 9, height: 9)
+                            Text(linked ? "Connected" : "Not connected").font(.subheadline.weight(.medium))
+                                .foregroundStyle(linked ? Color.green : Color.orange)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 5)
+                        .background(Capsule().fill((linked ? Color.green : Color.orange).opacity(0.15)))
+                        .overlay(Capsule().stroke((linked ? Color.green : Color.orange).opacity(0.5), lineWidth: 1))
+                    }
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: 0) {
+                    pill("link", "Pairing", linked ? "Active" : "None", linked)
+                    Divider().frame(height: 44).overlay(Color.white.opacity(0.08))
+                    pill("shield.fill", "VPN", linked ? "Running" : "Stopped", linked)
+                    Divider().frame(height: 44).overlay(Color.white.opacity(0.08))
+                    pill("wifi", "Tunnel", linked ? "Connected" : "Idle", linked)
+                    Divider().frame(height: 44).overlay(Color.white.opacity(0.08))
+                    pill("iphone", "Device", linked ? "Reachable" : "Unknown", linked)
+                }
+                .padding(.vertical, 12)
+                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.black.opacity(0.25)))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.white.opacity(0.06), lineWidth: 1))
+            }
+        }
+    }
+
+    private func pill(_ icon: String, _ title: String, _ value: String, _ ok: Bool) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: icon).font(.system(size: 22, weight: .semibold)).foregroundStyle(Theme.accent)
+            Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+            HStack(spacing: 5) {
+                Circle().fill(ok ? Color.green : Color.orange).frame(width: 7, height: 7)
+                Text(value).font(.caption).foregroundStyle(Theme.subtle).lineLimit(1).minimumScaleFactor(0.8)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// Pairing code / progress / errors while setup is running or has failed.
+    private var setupCard: some View {
+        card {
+            VStack(alignment: .leading, spacing: 10) {
+                switch manager.phase {
+                case .pairing:
+                    if let pin = pairing.pin {
+                        Text("Pairing code").font(.caption).foregroundStyle(Theme.subtle)
+                        Text(pin).font(.system(size: 34, weight: .bold, design: .monospaced)).foregroundStyle(Theme.accent)
+                        Text("Enter it in Settings › Privacy & Security › Developer Mode › Pair with AirShare.")
+                            .font(.footnote).foregroundStyle(Theme.subtle)
+                    } else {
+                        Text("Open Settings › Privacy & Security › Developer Mode and choose Pair with AirShare…")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+                    Button("Cancel Setup", role: .destructive) { manager.cancelSetup() }
+                case .connecting:
+                    HStack { ProgressView(); Text("Connecting to this device…").foregroundStyle(Theme.text) }
+                    Text("Allow the VPN configuration if iOS asks.").font(.footnote).foregroundStyle(Theme.subtle)
+                    Button("Cancel Setup", role: .destructive) { manager.cancelSetup() }
+                case .failed(let message):
+                    Text(message).font(.footnote).foregroundStyle(.red)
+                    Button("Retry Setup") { Task { await manager.setUp() } }.disabled(busy)
+                case .idle:
+                    Text("Not set up yet. Tap Setup Connection below.").font(.footnote).foregroundStyle(Theme.subtle)
+                default: EmptyView()
+                }
+                if let notice = manager.setupNotice { Text(notice).font(.footnote).foregroundStyle(.orange) }
+                if installer.job != nil {
+                    Text("\(installer.job?.name ?? "Install") — \(installer.stage.label)").font(.footnote).foregroundStyle(Theme.text)
+                }
+            }
+            .tint(Theme.accent)
+        }
+    }
+
+    private var connectionCard: some View {
+        NavigationLink { connectionDetail } label: {
+            card(glow: true) {
+                HStack(alignment: .top, spacing: 14) {
+                    iconTile("arrow.triangle.2.circlepath")
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("Connection").font(.system(size: 20, weight: .semibold)).foregroundStyle(Theme.text)
+                            Spacer()
+                            Text(method == "native" ? "Native" : "OTA").font(.subheadline.weight(.medium)).foregroundStyle(Theme.accent)
+                                .padding(.horizontal, 14).padding(.vertical, 5)
+                                .overlay(Capsule().stroke(Theme.accent.opacity(0.8), lineWidth: 1))
+                        }
+                        Text(manager.mode.title.replacingOccurrences(of: "Built-in Connection", with: "Built-in Connection & Pairing"))
+                            .font(.subheadline).foregroundStyle(Theme.subtle)
+                        Text(linked ? "Your device is paired and ready for native installation."
+                                    : "Pair this device to enable native installation.")
+                            .font(.subheadline).foregroundStyle(Theme.text.opacity(0.85)).padding(.top, 4)
+                    }
+                    Image(systemName: "chevron.right").foregroundStyle(Theme.subtle).padding(.top, 14)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func menuRow(icon: String, title: String, subtitle: String, value: String? = nil, valueTint: Color = .green,
+                         tint: Color = Theme.accent, titleTint: Color = Theme.text) -> some View {
+        HStack(spacing: 14) {
+            iconTile(icon, tint: tint)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 19, weight: .semibold)).foregroundStyle(titleTint)
+                Text(subtitle).font(.subheadline).foregroundStyle(Theme.subtle).lineLimit(2)
+            }
+            Spacer(minLength: 6)
+            if let value { Text(value).font(.system(size: 16, weight: .semibold)).foregroundStyle(valueTint) }
+            Image(systemName: "chevron.right").foregroundStyle(Theme.subtle)
+        }
+        .padding(.vertical, 10).contentShape(Rectangle())
+    }
+
+    private var menuCard: some View {
+        card {
+            VStack(spacing: 0) {
+                NavigationLink { restoreDetail } label: {
+                    menuRow(icon: "shield", title: "VPN", subtitle: "Local packet-tunnel provider",
+                            value: linked ? "Enabled" : "Off", valueTint: linked ? .green : .orange)
+                }
+                Divider().overlay(Color.white.opacity(0.08))
+                Button { Task { await manager.setUp() } } label: {
+                    menuRow(icon: "gearshape", title: "Setup Connection", subtitle: "Pair device and configure VPN")
+                }.disabled(busy)
+                Divider().overlay(Color.white.opacity(0.08))
+                NavigationLink { restoreDetail } label: {
+                    menuRow(icon: "arrow.clockwise", title: "Restore VPN", subtitle: "Quick reconnect (requires pairing)")
+                }
+                Divider().overlay(Color.white.opacity(0.08))
+                NavigationLink { updatesDetail } label: {
+                    menuRow(icon: "arrow.triangle.2.circlepath.circle", title: "App Updates",
+                            subtitle: "Auto-update, skip, roll back, re-sign",
+                            value: autoApps ? "On" : "Off", valueTint: autoApps ? .green : Theme.subtle)
+                }
+                if manager.mode == .builtIn {
+                    Divider().overlay(Color.white.opacity(0.08))
+                    Button { confirmReset = true } label: {
+                        menuRow(icon: "trash", title: "Forget Built-in Pairing", subtitle: "Remove pairing record and disconnect",
+                                tint: .red, titleTint: .red)
+                    }.disabled(busy)
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var statusCard: some View {
+        card {
+            VStack(spacing: 12) {
+                HStack(spacing: 14) {
+                    iconTile("checkmark.circle")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Connection Status").font(.system(size: 19, weight: .semibold)).foregroundStyle(Theme.text)
+                        Text(linked ? "All systems operational" : "Not connected").font(.subheadline).foregroundStyle(Theme.subtle)
+                    }
+                    Spacer(minLength: 6)
+                    Button { Task { await manager.setUp() } } label: {
+                        Label("Test Connection", systemImage: "waveform.path.ecg").font(.subheadline.weight(.medium))
+                            .foregroundStyle(Theme.accent).padding(.horizontal, 12).padding(.vertical, 10)
+                            .overlay(Capsule().stroke(Theme.accent.opacity(0.7), lineWidth: 1))
+                    }.buttonStyle(.plain).disabled(busy)
+                }
+                Divider().overlay(Color.white.opacity(0.08))
+                HStack(spacing: 0) {
+                    stat("clock", "Last install", totalTiming)
+                    Divider().frame(height: 40).overlay(Color.white.opacity(0.08))
+                    stat("arrow.up.circle", "Upload", timing("Upload"))
+                    Divider().frame(height: 40).overlay(Color.white.opacity(0.08))
+                    stat("arrow.down.app", "Install", timing("Install"))
+                }
+            }
+        }
+    }
+
+    private func stat(_ icon: String, _ label: String, _ value: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).font(.system(size: 20)).foregroundStyle(Theme.accent.opacity(0.8))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(.caption).foregroundStyle(Theme.subtle)
+                Text(value).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.text)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var tipCard: some View {
+        HStack(spacing: 14) {
+            iconTile("lightbulb")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Keep Your Connection Healthy").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                Text("Re-pair if the device changes, Developer Mode resets, or the tunnel stops working.")
+                    .font(.caption).foregroundStyle(Theme.subtle)
+            }
+            Spacer(minLength: 4)
+            NavigationLink { guideDetail } label: {
+                Label("View Guide", systemImage: "book").font(.footnote.weight(.medium)).foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(Capsule().fill(Theme.accent.opacity(0.14)))
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(LinearGradient(colors: [Theme.accent.opacity(0.22), Theme.card], startPoint: .trailing, endPoint: .leading)))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Theme.accent.opacity(0.35), lineWidth: 1))
+    }
+
+    private var footerCard: some View {
+        card {
+            HStack(spacing: 0) {
+                HStack(alignment: .top, spacing: 10) {
+                    Circle().fill(linked ? Color.green : Color.orange).frame(width: 12, height: 12).padding(.top, 4)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(linked ? "Device Online" : "Device Offline").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                        Text(manager.mode == .builtIn ? "Built-in pairing" : "Manual pairing").font(.footnote).foregroundStyle(Theme.subtle)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Divider().frame(height: 40).overlay(Color.white.opacity(0.08))
+                HStack(alignment: .top, spacing: 10) {
+                    Circle().fill(linked ? Color.green : Color.orange).frame(width: 12, height: 12).padding(.top, 4)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(linked ? "VPN Tunnel Active" : "VPN Tunnel Idle").font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                        Text("Local /32 (127.0.0.1)").font(.footnote).foregroundStyle(Theme.subtle)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 14)
+            }
+        }
+    }
+
+    // MARK: Detail pages
+
+    private var connectionDetail: some View {
+        TableScreen(title: "Connection") {
+            Section {
+                Picker(selection: $method) {
+                    Label("OTA · itms-services", systemImage: "globe").tag("ota")
+                    Label("Native · built-in VPN", systemImage: "iphone.and.arrow.forward").tag("native")
+                } label: {
+                    Label("Install method", systemImage: "arrow.down.app.fill").foregroundStyle(Theme.text)
+                }
+                .pickerStyle(.menu).listRowBackground(Theme.card).disabled(busy)
+                TNote(text: method == "native"
+                      ? "Installs straight to this device over a local VPN and a device pairing — no AirShare domain, TLS cert or itms-services prompt. Needs a build signed with a profile that allows Network Extensions (packet-tunnel-provider)."
+                      : "Serves the signed IPA from the on-device HTTPS server and hands iOS an itms-services link.")
+            }
+            Section {
+                Picker(selection: $manager.mode) {
+                    ForEach(DeviceConnectionMode.allCases) { Text($0.title).tag($0) }
+                } label: {
+                    Label("Connection", systemImage: "point.3.connected.trianglepath.dotted").foregroundStyle(Theme.text)
+                }
+                .pickerStyle(.menu).listRowBackground(Theme.card).disabled(busy)
+                TNote(text: manager.mode == .builtIn
+                      ? "Built-in manages a local VPN inside AirShare. Creating a pairing on-device needs iOS 27+, Developer Mode and Local Network access. The VPN may replace another active VPN."
+                      : "Manual uses an imported pairingFile.plist in AirShare's Documents folder and your own local VPN.")
+            }
+            Section { statusRows }
+        }
+    }
+
+    private var restoreDetail: some View {
+        TableScreen(title: "Restore VPN") { reconnectSection }
+    }
+
+    private var updatesDetail: some View {
+        TableScreen(title: "App Updates") { appUpdateSection }
+    }
+
+    private var guideDetail: some View {
+        TableScreen(title: "Guide") {
+            Section {
+                TNote(text: "1. Turn on Developer Mode (Settings › Privacy & Security).\n2. Tap Setup Connection and allow the VPN configuration.\n3. Enter the pairing code shown here in Settings › Privacy & Security › Developer Mode › Pair with AirShare.\n4. Pick Native as the install method.\n\nRe-pair if you change devices, Developer Mode resets, or the tunnel stops responding (Forget Built-in Pairing, then Setup Connection).")
             }
         }
     }
