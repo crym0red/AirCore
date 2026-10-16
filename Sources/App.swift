@@ -11,8 +11,11 @@ struct UnzipDropApp: App {
     @StateObject private var config = Config()
     @StateObject private var notifications = NotificationManager.shared
     @Environment(\.scenePhase) private var scenePhase
+    @UIApplicationDelegateAdaptor(AirShareAppDelegate.self) private var appDelegate
 
     init() {
+        // Re-attach to background downloads that finished while the app was closed.
+        _ = IPADownloader.shared
         // Must register before launch finishes (pairing keeps running via a continued-processing task).
         DevicePairingService.registerBackgroundTask()
     }

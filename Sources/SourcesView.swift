@@ -992,7 +992,7 @@ private struct SourceDetailScreen: View {
                                     Circle().trim(from: 0, to: max(0.05, progress)).stroke(Theme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
                                 }
                             } else if have {
-                                Image(systemName: "sdcard.fill").font(.system(size: 20, weight: .bold))
+                                Image(systemName: "checkmark.circle.fill").font(.system(size: 22, weight: .bold))
                             } else {
                                 Image(systemName: "arrow.down").font(.system(size: 20, weight: .bold))
                             }
@@ -1000,11 +1000,6 @@ private struct SourceDetailScreen: View {
                         .frame(width: 30, height: 30).foregroundStyle(Theme.accent)
                     }
                     .disabled(downloading != nil || app.downloadURL == nil)
-                    HStack(spacing: 6) {
-                        Label(appStats.downloadsText(app), systemImage: "arrow.down.circle")
-                        Label(appStats.viewsText(app), systemImage: "eye")
-                    }
-                    .font(.system(size: 10)).foregroundStyle(Theme.subtle).lineLimit(1)
                 }
             }
             .contentShape(Rectangle())
@@ -1077,210 +1072,7 @@ nonisolated enum IPAInbox {
     }
 }
 
-nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    static let shared = IPADownloader()
-    private var session: URLSession!
-    private var handlers: [Int: (progress: @Sendable (Double) -> Void, done: @Sendable (Result<URL, Error>) -> Void, dest: URL)] = [:]
-    private let lock = NSLock()
-
-    override init() {
-        super.init()
-        session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-    }
-
-    /// Downloads to the inbox; returns immediately if it's already on device.
-    func download(_ app: SourceApp, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
-        guard let src = app.downloadURL else { throw GitHubError.badConfig("This app has no download URL in the source.") }
-        let dest = IPAInbox.url(for: app)
-        if FileManager.default.fileExists(atPath: dest.path) { progress(1); return dest }
-        // Big file on a server that supports byte ranges: pull it in several pieces over separate connections.
-        if let probe = await Self.probeRanges(src), probe.size >= 24_000_000 {
-            do { return try await downloadParallel(src, probe: probe, dest: dest, progress: progress) }
-            catch { if Task.isCancelled { throw error } /* anything else: use the single-stream path below */ }
-        }
-        return try await withCheckedThrowingContinuation { cont in
-            let req = Self.request(for: src)
-            let task = session.downloadTask(with: req)
-            lock.lock(); handlers[task.taskIdentifier] = (progress, { cont.resume(with: $0) }, dest); lock.unlock()
-            task.resume()
-        }
-    }
-
-    static func request(for src: URL) -> URLRequest {
-        var req = URLRequest(url: src)
-        req.setValue("unzip-drop-ios", forHTTPHeaderField: "User-Agent")
-        // Our own host counts the download per device; never send the device id to third-party hosts.
-        if let h = src.host, h == URL(string: ZefvAccount.apiBase)?.host { req.setValue(MDID.current, forHTTPHeaderField: "X-AS-ADID") }
-        return req
-    }
-
-    struct RangeProbe { let size: Int64; let etag: String? }
-
-    /// HEAD request: does the server accept byte ranges, and how big is the file?
-    static func probeRanges(_ src: URL) async -> RangeProbe? {
-        var req = request(for: src)
-        req.httpMethod = "HEAD"; req.timeoutInterval = 8
-        guard let (_, resp) = try? await URLSession.shared.data(for: req), let h = resp as? HTTPURLResponse, h.statusCode == 200,
-              (h.value(forHTTPHeaderField: "Accept-Ranges") ?? "").lowercased().contains("bytes"),
-              h.expectedContentLength > 0 else { return nil }
-        return RangeProbe(size: h.expectedContentLength, etag: h.value(forHTTPHeaderField: "ETag"))
-    }
-
-    private func downloadParallel(_ src: URL, probe: RangeProbe, dest: URL, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
-        let fm = FileManager.default
-        let size = probe.size
-        let wanted: Int64 = size >= 300_000_000 ? 8 : 6
-        let step = (size + wanted - 1) / wanted
-        let n = Int((size + step - 1) / step)
-        let dir = fm.temporaryDirectory.appendingPathComponent("ipa-parts-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: dir) }
-        let written = ByteCounter(count: n)
-        let ifRange: String? = probe.etag.flatMap { $0.hasPrefix("W/") ? nil : $0 }
-
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for i in 0..<n {
-                let lo = Int64(i) * step
-                let hi = min(size - 1, lo + step - 1)
-                let part = dir.appendingPathComponent("p\(i)")
-                group.addTask {
-                    var req = Self.request(for: src)
-                    req.setValue("bytes=\(lo)-\(hi)", forHTTPHeaderField: "Range")
-                    if let ifRange { req.setValue(ifRange, forHTTPHeaderField: "If-Range") }
-                    let fetcher = PartFetcher(dest: part, expected: hi - lo + 1) { bytes in
-                        progress(written.set(i, bytes, total: size))
-                    }
-                    try await fetcher.run(req)
-                }
-            }
-            try await group.waitForAll()
-        }
-
-        // Stitch the pieces together (first piece becomes the file, the rest are appended).
-        let merged = fm.temporaryDirectory.appendingPathComponent("ipa-merged-\(UUID().uuidString).ipa")
-        try await Task.detached(priority: .userInitiated) {
-            try fm.moveItem(at: dir.appendingPathComponent("p0"), to: merged)
-            let w = try FileHandle(forWritingTo: merged)
-            defer { try? w.close() }
-            try w.seekToEnd()
-            if n > 1 {
-                for i in 1..<n {
-                    let url = dir.appendingPathComponent("p\(i)")
-                    let r = try FileHandle(forReadingFrom: url)
-                    defer { try? r.close() }
-                    while true {
-                        let chunk = try autoreleasepool { try r.read(upToCount: 4 << 20) ?? Data() }
-                        if chunk.isEmpty { break }
-                        try w.write(contentsOf: chunk)
-                    }
-                    try? fm.removeItem(at: url)
-                }
-            }
-        }.value
-        let final = (try? fm.attributesOfItem(atPath: merged.path)[.size] as? Int64) ?? -1
-        guard final == size else { try? fm.removeItem(at: merged); throw GitHubError.badConfig("Download pieces didn't add up.") }
-        try? fm.removeItem(at: dest)
-        try fm.moveItem(at: merged, to: dest)
-        progress(1)
-        return dest
-    }
-
-    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didWriteData: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        lock.lock(); let h = handlers[downloadTask.taskIdentifier]; lock.unlock()
-        guard let h, totalBytesExpectedToWrite > 0 else { return }
-        h.progress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
-    }
-
-    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        lock.lock(); let h = handlers.removeValue(forKey: downloadTask.taskIdentifier); lock.unlock()
-        guard let h else { return }
-        let code = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
-        guard code < 400 else { h.done(.failure(GitHubError.badConfig("Download failed (HTTP \(code))"))); return }
-        do {
-            try? FileManager.default.removeItem(at: h.dest)
-            try FileManager.default.moveItem(at: location, to: h.dest)
-            h.done(.success(h.dest))
-        } catch { h.done(.failure(error)) }
-    }
-
-    func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let error else { return }
-        lock.lock(); let h = handlers.removeValue(forKey: task.taskIdentifier); lock.unlock()
-        h?.done(.failure(error))
-    }
-}
-
-/// Thread-safe per-piece byte totals -> one overall fraction.
-nonisolated private final class ByteCounter: @unchecked Sendable {
-    private var parts: [Int64]
-    private let lock = NSLock()
-    init(count: Int) { parts = Array(repeating: 0, count: count) }
-    func set(_ i: Int, _ bytes: Int64, total: Int64) -> Double {
-        lock.lock(); parts[i] = bytes; let sum = parts.reduce(0, +); lock.unlock()
-        return min(1, Double(sum) / Double(max(total, 1)))
-    }
-}
-
-/// One byte-range piece of a download, on its own URLSession (so it gets its own connection).
-nonisolated private final class PartFetcher: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let dest: URL
-    private let expected: Int64
-    private let onBytes: @Sendable (Int64) -> Void
-    private let lock = NSLock()
-    private var cont: CheckedContinuation<Void, Error>?
-    private var failure: Error?
-    private var stored = false
-
-    init(dest: URL, expected: Int64, onBytes: @escaping @Sendable (Int64) -> Void) {
-        self.dest = dest; self.expected = expected; self.onBytes = onBytes
-    }
-
-    func run(_ req: URLRequest) async throws {
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-        let task = session.downloadTask(with: req)
-        defer { session.finishTasksAndInvalidate() }
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-                lock.lock(); cont = c; lock.unlock()
-                task.resume()
-            }
-        } onCancel: { task.cancel() }
-    }
-
-    private func fail(_ e: Error) { lock.lock(); if failure == nil { failure = e }; lock.unlock() }
-
-    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didWriteData: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        // A plain 200 means the server ignored the range — stop right away instead of downloading the whole file.
-        if (downloadTask.response as? HTTPURLResponse)?.statusCode == 200 {
-            fail(GitHubError.badConfig("Server ignored the byte range.")); downloadTask.cancel(); return
-        }
-        onBytes(totalBytesWritten)
-    }
-
-    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        let code = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 206 else { fail(GitHubError.badConfig("Unexpected HTTP \(code) for a byte range.")); return }
-        let got = (try? FileManager.default.attributesOfItem(atPath: location.path)[.size] as? Int64) ?? -1
-        guard got == expected else { fail(GitHubError.badConfig("Piece came back the wrong size.")); return }
-        do {
-            try? FileManager.default.removeItem(at: dest)
-            try FileManager.default.moveItem(at: location, to: dest)
-            lock.lock(); stored = true; lock.unlock()
-        } catch { fail(error) }
-    }
-
-    func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        lock.lock()
-        let c = cont; cont = nil
-        let result: Result<Void, Error>
-        if let failure { result = .failure(failure) }
-        else if let error { result = .failure(error) }
-        else if stored { result = .success(()) }
-        else { result = .failure(GitHubError.badConfig("Piece was not saved.")) }
-        lock.unlock()
-        c?.resume(with: result)
-    }
-}
+// IPADownloader (background-session downloader) lives in BackgroundDownloader.swift.
 
 // MARK: - App detail sheet (AirShare layout)
 
@@ -1388,8 +1180,7 @@ struct AppDetailSheet: View {
                         Text(app.description.isEmpty ? "No description." : app.description).font(.system(size: 13)).foregroundStyle(Theme.text)
                     }
                 }
-                .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.white.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 14))
+                .padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .leading)
             }
             VStack(spacing: 6) {
                 stat("v\(app.version)", "VERSION")
@@ -1397,12 +1188,10 @@ struct AppDetailSheet: View {
                 stat(updatedText, "UPDATED")
                 stat(appStats.downloadsText(app), "DOWNLOADS")
                 stat(appStats.viewsText(app), "VIEWS")
-                stat(signed.entries.filter { $0.bundleID == app.bundle }.count.description, "SIGNED")
             }
             .frame(width: 74)
         }
-        .padding(10)
-        .background(Color(white: 0.11)).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(.vertical, 10)
     }
 
     private func stat(_ v: String, _ k: String) -> some View {
@@ -1411,7 +1200,6 @@ struct AppDetailSheet: View {
             Text(k).font(.system(size: 8, weight: .semibold)).kerning(0.8).foregroundStyle(Theme.subtle)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 8)
-        .background(Color.white.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
     private var updatedText: String { ageText(app.updated) }

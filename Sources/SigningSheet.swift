@@ -1202,6 +1202,11 @@ struct SigningSheet: View {
         let logSink = SigningLogSink { line in log.append(line) }
         // Native: connect and upload the files signing won't touch while the signer is still running.
         NativeInstaller.shared.beginPrestage(original: url, bundleID: meta.bundleID, name: name)
+        // Start the song/keep-alive the moment you tap Sign, not only once the upload begins.
+        let holdID = "sign-\(UUID().uuidString)"
+        if NativeInstaller.isSelected { BackgroundKeepAlive.shared.start(holdID) }
+        var handedOff = false
+        defer { if !handedOff { BackgroundKeepAlive.shared.stop(holdID) } }
         do {
             let outcome = try await Task.detached(priority: .userInitiated) {
                 try await Signer.signDetached(
@@ -1223,7 +1228,10 @@ struct SigningSheet: View {
             ZefvAccount.shared.recordSign()
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             // Native: start installing the moment signing finishes — no extra tap, no waiting.
-            if NativeInstaller.isSelected { Task { await install(entry) } }
+            if NativeInstaller.isSelected {
+                handedOff = true
+                Task { await install(entry); BackgroundKeepAlive.shared.stop(holdID) }
+            }
         } catch {
             NativeInstaller.shared.cancelPrestage()
             self.error = error.localizedDescription
