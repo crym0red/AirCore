@@ -58,8 +58,6 @@ struct SettingsView: View {
                                         subtitle: account.isLoggedIn ? "\(account.username ?? "") · account and device settings" : "Sign in or register") { screen = .account }
                             SettingsRow(icon: "plus.app.fill", title: "Request Certificate",
                                         subtitle: "Submit or review your certificate requests") { screen = .signingRequestCertificate }
-                            SettingsRow(icon: "sparkles", title: "Extras",
-                                        subtitle: "Auto-update signing") { screen = .extras }
                         }
 
                         SettingsSection("Signing") {
@@ -1733,8 +1731,6 @@ private struct NativeInstallScreen: View {
     @AppStorage(AppAutoUpdater.chargingOnlyKey) private var chargingOnly = false
     @AppStorage(AppAutoUpdater.certRefreshKey) private var certRefresh = false
     @AppStorage("AirShare.uploadChunkMB") private var chunkMB = 4
-    @AppStorage("AirShare.fastSigner") private var fastSigner = false
-    @AppStorage("AirShare.fastSignerTripped") private var fastSignerTripped = false
     @State private var confirmReset = false
     @Environment(\.dismiss) private var dismiss
 
@@ -1788,6 +1784,7 @@ private struct NativeInstallScreen: View {
                 heroCard
                 if !linked || manager.setupNotice != nil || installer.job != nil { setupCard }
                 methodCard
+                chunkCard
                 actionGrid
                 lastInstallCard
                 tipCard
@@ -2078,6 +2075,26 @@ private struct NativeInstallScreen: View {
         }
     }
 
+    private var chunkCard: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "square.stack.3d.up").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.accent)
+                .frame(width: 38, height: 38)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black.opacity(0.5)))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Upload chunk size").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
+                Text("Bigger = fewer round trips, more memory").font(.system(size: 12)).foregroundStyle(Theme.subtle)
+            }
+            Spacer(minLength: 4)
+            Picker("", selection: $chunkMB) {
+                ForEach([1, 2, 4, 8, 16], id: \.self) { Text("\($0) MB").tag($0) }
+            }
+            .pickerStyle(.menu).tint(Theme.accent).disabled(busy)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(panel))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(hairline, lineWidth: 1))
+    }
+
     private var tipCard: some View {
         HStack(spacing: 12) {
             Image(systemName: "lightbulb").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.accent)
@@ -2145,29 +2162,6 @@ private struct NativeInstallScreen: View {
                 TNote(text: manager.mode == .builtIn
                       ? "Built-in manages a local VPN inside AirShare. Creating a pairing on-device needs iOS 27+, Developer Mode and Local Network access. The VPN may replace another active VPN."
                       : "Manual uses an imported pairingFile.plist in AirShare's Documents folder and your own local VPN.")
-            }
-            Section {
-                Picker(selection: $chunkMB) {
-                    ForEach([1, 2, 4, 8, 16], id: \.self) { Text($0 == 4 ? "\($0) MB (Default)" : "\($0) MB").tag($0) }
-                } label: {
-                    Label("Upload chunk size", systemImage: "square.stack.3d.up").foregroundStyle(Theme.text)
-                }
-                .pickerStyle(.menu).listRowBackground(Theme.card).disabled(busy)
-                TNote(text: "Applies to the next native install. Bigger chunks mean fewer round trips and may upload faster, but use more memory. Compare the same app at different sizes using the Upload time under Last install.")
-            } header: {
-                Text("Upload performance").font(.caption.weight(.semibold)).foregroundStyle(Theme.subtle)
-            }
-            Section {
-                Toggle(isOn: $fastSigner) {
-                    Label("Fast signer (beta)", systemImage: "bolt.fill").foregroundStyle(Theme.text)
-                }
-                .tint(Theme.accent).listRowBackground(Theme.card)
-                .onChange(of: fastSigner) { on in if on { fastSignerTripped = false } }
-                TNote(text: fastSignerTripped
-                      ? "Fast signer was switched off automatically because AirShare closed during its last run. Turn it back on to test again."
-                      : "Unpacks and repacks IPAs in parallel and copies unchanged files as they are. Compare the Turbo timing line in the signing log with this on and off.")
-            } header: {
-                Text("Signing").font(.caption.weight(.semibold)).foregroundStyle(Theme.subtle)
             }
             Section { statusRows }
         }

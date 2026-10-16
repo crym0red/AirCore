@@ -109,6 +109,10 @@ def main():
         sdk_path = subprocess.check_output(["xcrun", "--sdk", sdk, "--show-sdk-path"], text=True).strip()
         env["BINDGEN_EXTRA_CLANG_ARGS"] = f"--sysroot={sdk_path}"
         env["IPHONEOS_DEPLOYMENT_TARGET"] = "16.0"
+        # Use the iPhone's hardware AES (and carry-less multiply for GCM) instead of the slow software
+        # fallback in the crypto crates; this roughly doubles native install speed. Unused cfgs are harmless.
+        extra = "--cfg aes_armv8 --cfg polyval_armv8"
+        env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " " + extra).strip()
         run("cargo", f"+{toolchain}", "build", "--locked", "--release", "--target", target,
             "-p", "idevice-ffi", cwd=source, env=env)
     headers = WORK / "include"

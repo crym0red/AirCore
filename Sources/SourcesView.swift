@@ -365,7 +365,7 @@ final class SourceStore: ObservableObject {
                 group.addTask { (src, await Self.cachedParsedRepoFromDisk(for: src)) }
             }
             for await (src, parsed) in group {
-                if let parsed, parsedCache[src.id] == nil { applyParsedRepo(parsed, to: src) }
+                if let parsed, parsedCache[src.id] == nil { applyParsedRepo(parsed, to: src, fromDisk: true) }
             }
         }
         await refreshAllInBackground()
@@ -386,14 +386,14 @@ final class SourceStore: ObservableObject {
         }
     }
 
-    private func applyParsedRepo(_ parsed: RepoParser.ParsedRepo, to source: RepoSource) {
+    private func applyParsedRepo(_ parsed: RepoParser.ParsedRepo, to source: RepoSource, fromDisk: Bool = false) {
         var updated = source
         if updated.name.isEmpty || updated.id.hasPrefix("custom-") { updated.name = parsed.name }
         if updated.iconURL == nil { updated.iconURL = parsed.iconURL }
         if let desc = parsed.description, !desc.isEmpty, updated.description.isEmpty || updated.id.hasPrefix("custom-") { updated.description = desc }
         if let author = parsed.author { updated.author = author }
         updated.appCount = parsed.groups.count
-        updated.lastFetched = Date()
+        if !fromDisk { updated.lastFetched = Date() }   // a disk copy is shown instantly but still gets refreshed
         parsedCache[source.id] = parsed
         update(updated)
     }
@@ -421,6 +421,14 @@ final class SourceStore: ObservableObject {
     func move(from: IndexSet, to: Int) { sources.move(fromOffsets: from, toOffset: to); save() }
     private func save() { try? JSONEncoder().encode(sources).write(to: fileURL) }
     func cachedParsedRepo(for source: RepoSource) -> RepoParser.ParsedRepo? { parsedCache[source.id] }
+    /// In-memory copy if there is one, otherwise the on-disk copy (loaded off the main thread). Never touches the network.
+    func cachedOrDisk(for source: RepoSource) async -> RepoParser.ParsedRepo? {
+        if let p = parsedCache[source.id] { return p }
+        guard let p = await Self.cachedParsedRepoFromDisk(for: source) else { return nil }
+        if let existing = parsedCache[source.id] { return existing }
+        applyParsedRepo(p, to: source, fromDisk: true)
+        return p
+    }
     /// Every source that has a parsed copy in memory, in list order.
     func allCached() -> [(source: RepoSource, repo: RepoParser.ParsedRepo)] {
         sources.compactMap { s in parsedCache[s.id].map { (s, $0) } }
@@ -436,7 +444,7 @@ final class SourceStore: ObservableObject {
     func prefetchSources() async {
         // Fill any hole left by warmUpAtLaunch (e.g. a source added since).
         for src in sources where parsedCache[src.id] == nil {
-            if let p = await Self.cachedParsedRepoFromDisk(for: src), parsedCache[src.id] == nil { applyParsedRepo(p, to: src) }
+            if let p = await Self.cachedParsedRepoFromDisk(for: src), parsedCache[src.id] == nil { applyParsedRepo(p, to: src, fromDisk: true) }
         }
         let snapshot = sources.filter { parsedCache[$0.id] == nil && !prefetchingIDs.contains($0.id) }
         snapshot.forEach { prefetchingIDs.insert($0.id) }
@@ -456,7 +464,6 @@ final class SourceStore: ObservableObject {
 // MARK: - Sources list (Browse tab)
 
 struct SourcesView: View {
-    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     @ObservedObject private var store = SourceStore.shared
     @State private var editing = false
     @State private var adding = false
@@ -638,7 +645,6 @@ struct SourcesView: View {
 // MARK: - Source detail (the app list)
 
 private struct SourceDetailScreen: View {
-    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     let source: RepoSource
     @ObservedObject private var store = SourceStore.shared
     @ObservedObject private var appStats = AppStatsStore.shared
@@ -646,7 +652,7 @@ private struct SourceDetailScreen: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var parsed: RepoParser.ParsedRepo?
-    @State private var loading = true
+    @State private var loading: Bool
     @State private var error: String?
     @State private var search = ""
     @State private var showSearch = false
@@ -657,6 +663,15 @@ private struct SourceDetailScreen: View {
     @State private var visibleGroupCount = 6
 
     private enum Sort: String, CaseIterable { case updated = "Recently updated", name = "Name", size = "Size" }
+
+    init(source: RepoSource) {
+        self.source = source
+        // Whatever is already in memory shows on the very first frame: no spinner, no empty list.
+        let cached = SourceStore.shared.cachedParsedRepo(for: source)
+        _parsed = State(initialValue: cached)
+        _loading = State(initialValue: cached == nil)
+        _groups = State(initialValue: cached?.sorted("Updated") ?? [])
+    }
 
     private var current: RepoSource { store.sources.first { $0.id == source.id } ?? source }
 
@@ -679,7 +694,7 @@ private struct SourceDetailScreen: View {
     }
 
     /// The list actually rendered. Recomputed off-main (debounced) when search/sort/parsed change — never in `body`.
-    @State private var groups: [AppGroup] = []
+    @State private var groups: [AppGroup]
     @State private var filterTask: Task<Void, Never>?
     @State private var category: AppCategory = .all
     private var visibleGroups: [AppGroup] { Array(groups.prefix(visibleGroupCount)) }
@@ -755,7 +770,9 @@ private struct SourceDetailScreen: View {
         .background(Color.black.ignoresSafeArea())
         .task { await appStats.refresh() }
         .task {
-            if let cached = store.cachedParsedRepo(for: current) {
+            var cached = store.cachedParsedRepo(for: current)
+            if cached == nil { cached = await store.cachedOrDisk(for: current) }   // disk copy: instant, no network
+            if let cached {
                 parsed = cached
                 loading = false
                 recompute(debounce: false)
@@ -921,7 +938,7 @@ private struct SourceDetailScreen: View {
 
     private func appRow(_ g: AppGroup) -> some View {
         let app = g.latest
-        let have = IPAInbox.has(app)
+        let have = signed.entries.contains { $0.bundleID == app.bundle } || IPAInbox.has(app)
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 14) {
                 SourceIcon(url: app.iconURL, side: 56, fallback: app.name)
@@ -959,7 +976,7 @@ private struct SourceDetailScreen: View {
                                     Circle().trim(from: 0, to: max(0.05, progress)).stroke(Theme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
                                 }
                             } else if have {
-                                Image(systemName: "checkmark").font(.system(size: 20, weight: .bold))
+                                Image(systemName: "sdcard.fill").font(.system(size: 20, weight: .bold))
                             } else {
                                 Image(systemName: "arrow.down").font(.system(size: 20, weight: .bold))
                             }
@@ -967,6 +984,11 @@ private struct SourceDetailScreen: View {
                         .frame(width: 30, height: 30).foregroundStyle(Theme.accent)
                     }
                     .disabled(downloading != nil || app.downloadURL == nil)
+                    HStack(spacing: 6) {
+                        Label(appStats.downloadsText(app), systemImage: "arrow.down.circle")
+                        Label(appStats.viewsText(app), systemImage: "eye")
+                    }
+                    .font(.system(size: 10)).foregroundStyle(Theme.subtle).lineLimit(1)
                 }
             }
             .contentShape(Rectangle())
@@ -993,8 +1015,9 @@ private struct SourceDetailScreen: View {
     private func load(showSpinner: Bool = true) async {
         if showSpinner { loading = true }
         error = nil
+        let hadData = parsed != nil
         do { parsed = try await store.fetch(current) } catch { self.error = error.localizedDescription }
-        visibleGroupCount = 6
+        if showSpinner || !hadData { visibleGroupCount = 6 }   // a quiet refresh must not yank the list back to the top
         loading = false
         recompute(debounce: false)
     }
@@ -1022,16 +1045,7 @@ struct SourceIcon: View {
     let url: URL?
     let side: CGFloat
     var fallback: String = ""
-    var body: some View {
-        if url == nil, fallback.lowercased() == "airshare", let logo = UIImage(named: "airshare_logo") {
-            Image(uiImage: logo)
-                .resizable().scaledToFill()
-                .frame(width: side, height: side)
-                .clipShape(RoundedRectangle(cornerRadius: side * 0.225, style: .continuous))
-        } else {
-            CachedIcon(url: url, side: side, fallback: fallback)
-        }
-    }
+    var body: some View { CachedIcon(url: url, side: side, fallback: fallback) }
 }
 
 // MARK: - Inbox + downloader (progress-reporting)
@@ -1063,15 +1077,96 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
         guard let src = app.downloadURL else { throw GitHubError.badConfig("This app has no download URL in the source.") }
         let dest = IPAInbox.url(for: app)
         if FileManager.default.fileExists(atPath: dest.path) { progress(1); return dest }
+        // Big file on a server that supports byte ranges: pull it in several pieces over separate connections.
+        if let probe = await Self.probeRanges(src), probe.size >= 24_000_000 {
+            do { return try await downloadParallel(src, probe: probe, dest: dest, progress: progress) }
+            catch { if Task.isCancelled { throw error } /* anything else: use the single-stream path below */ }
+        }
         return try await withCheckedThrowingContinuation { cont in
-            var req = URLRequest(url: src)
-            req.setValue("unzip-drop-ios", forHTTPHeaderField: "User-Agent")
-            // Our own host counts the download per device; never send the device id to third-party hosts.
-            if let h = src.host, h == URL(string: ZefvAccount.apiBase)?.host { req.setValue(MDID.current, forHTTPHeaderField: "X-AS-ADID") }
+            let req = Self.request(for: src)
             let task = session.downloadTask(with: req)
             lock.lock(); handlers[task.taskIdentifier] = (progress, { cont.resume(with: $0) }, dest); lock.unlock()
             task.resume()
         }
+    }
+
+    static func request(for src: URL) -> URLRequest {
+        var req = URLRequest(url: src)
+        req.setValue("unzip-drop-ios", forHTTPHeaderField: "User-Agent")
+        // Our own host counts the download per device; never send the device id to third-party hosts.
+        if let h = src.host, h == URL(string: ZefvAccount.apiBase)?.host { req.setValue(MDID.current, forHTTPHeaderField: "X-AS-ADID") }
+        return req
+    }
+
+    struct RangeProbe { let size: Int64; let etag: String? }
+
+    /// HEAD request: does the server accept byte ranges, and how big is the file?
+    static func probeRanges(_ src: URL) async -> RangeProbe? {
+        var req = request(for: src)
+        req.httpMethod = "HEAD"; req.timeoutInterval = 8
+        guard let (_, resp) = try? await URLSession.shared.data(for: req), let h = resp as? HTTPURLResponse, h.statusCode == 200,
+              (h.value(forHTTPHeaderField: "Accept-Ranges") ?? "").lowercased().contains("bytes"),
+              h.expectedContentLength > 0 else { return nil }
+        return RangeProbe(size: h.expectedContentLength, etag: h.value(forHTTPHeaderField: "ETag"))
+    }
+
+    private func downloadParallel(_ src: URL, probe: RangeProbe, dest: URL, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        let fm = FileManager.default
+        let size = probe.size
+        let wanted: Int64 = size >= 300_000_000 ? 8 : 6
+        let step = (size + wanted - 1) / wanted
+        let n = Int((size + step - 1) / step)
+        let dir = fm.temporaryDirectory.appendingPathComponent("ipa-parts-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let written = ByteCounter(count: n)
+        let ifRange: String? = probe.etag.flatMap { $0.hasPrefix("W/") ? nil : $0 }
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for i in 0..<n {
+                let lo = Int64(i) * step
+                let hi = min(size - 1, lo + step - 1)
+                let part = dir.appendingPathComponent("p\(i)")
+                group.addTask {
+                    var req = Self.request(for: src)
+                    req.setValue("bytes=\(lo)-\(hi)", forHTTPHeaderField: "Range")
+                    if let ifRange { req.setValue(ifRange, forHTTPHeaderField: "If-Range") }
+                    let fetcher = PartFetcher(dest: part, expected: hi - lo + 1) { bytes in
+                        progress(written.set(i, bytes, total: size))
+                    }
+                    try await fetcher.run(req)
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        // Stitch the pieces together (first piece becomes the file, the rest are appended).
+        let merged = fm.temporaryDirectory.appendingPathComponent("ipa-merged-\(UUID().uuidString).ipa")
+        try await Task.detached(priority: .userInitiated) {
+            try fm.moveItem(at: dir.appendingPathComponent("p0"), to: merged)
+            let w = try FileHandle(forWritingTo: merged)
+            defer { try? w.close() }
+            try w.seekToEnd()
+            if n > 1 {
+                for i in 1..<n {
+                    let url = dir.appendingPathComponent("p\(i)")
+                    let r = try FileHandle(forReadingFrom: url)
+                    defer { try? r.close() }
+                    while true {
+                        let chunk = try autoreleasepool { try r.read(upToCount: 4 << 20) ?? Data() }
+                        if chunk.isEmpty { break }
+                        try w.write(contentsOf: chunk)
+                    }
+                    try? fm.removeItem(at: url)
+                }
+            }
+        }.value
+        let final = (try? fm.attributesOfItem(atPath: merged.path)[.size] as? Int64) ?? -1
+        guard final == size else { try? fm.removeItem(at: merged); throw GitHubError.badConfig("Download pieces didn't add up.") }
+        try? fm.removeItem(at: dest)
+        try fm.moveItem(at: merged, to: dest)
+        progress(1)
+        return dest
     }
 
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didWriteData: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -1099,10 +1194,81 @@ nonisolated final class IPADownloader: NSObject, URLSessionDownloadDelegate, @un
     }
 }
 
+/// Thread-safe per-piece byte totals -> one overall fraction.
+nonisolated private final class ByteCounter: @unchecked Sendable {
+    private var parts: [Int64]
+    private let lock = NSLock()
+    init(count: Int) { parts = Array(repeating: 0, count: count) }
+    func set(_ i: Int, _ bytes: Int64, total: Int64) -> Double {
+        lock.lock(); parts[i] = bytes; let sum = parts.reduce(0, +); lock.unlock()
+        return min(1, Double(sum) / Double(max(total, 1)))
+    }
+}
+
+/// One byte-range piece of a download, on its own URLSession (so it gets its own connection).
+nonisolated private final class PartFetcher: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let dest: URL
+    private let expected: Int64
+    private let onBytes: @Sendable (Int64) -> Void
+    private let lock = NSLock()
+    private var cont: CheckedContinuation<Void, Error>?
+    private var failure: Error?
+    private var stored = false
+
+    init(dest: URL, expected: Int64, onBytes: @escaping @Sendable (Int64) -> Void) {
+        self.dest = dest; self.expected = expected; self.onBytes = onBytes
+    }
+
+    func run(_ req: URLRequest) async throws {
+        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        let task = session.downloadTask(with: req)
+        defer { session.finishTasksAndInvalidate() }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                lock.lock(); cont = c; lock.unlock()
+                task.resume()
+            }
+        } onCancel: { task.cancel() }
+    }
+
+    private func fail(_ e: Error) { lock.lock(); if failure == nil { failure = e }; lock.unlock() }
+
+    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didWriteData: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        // A plain 200 means the server ignored the range — stop right away instead of downloading the whole file.
+        if (downloadTask.response as? HTTPURLResponse)?.statusCode == 200 {
+            fail(GitHubError.badConfig("Server ignored the byte range.")); downloadTask.cancel(); return
+        }
+        onBytes(totalBytesWritten)
+    }
+
+    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        let code = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 206 else { fail(GitHubError.badConfig("Unexpected HTTP \(code) for a byte range.")); return }
+        let got = (try? FileManager.default.attributesOfItem(atPath: location.path)[.size] as? Int64) ?? -1
+        guard got == expected else { fail(GitHubError.badConfig("Piece came back the wrong size.")); return }
+        do {
+            try? FileManager.default.removeItem(at: dest)
+            try FileManager.default.moveItem(at: location, to: dest)
+            lock.lock(); stored = true; lock.unlock()
+        } catch { fail(error) }
+    }
+
+    func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let c = cont; cont = nil
+        let result: Result<Void, Error>
+        if let failure { result = .failure(failure) }
+        else if let error { result = .failure(error) }
+        else if stored { result = .success(()) }
+        else { result = .failure(GitHubError.badConfig("Piece was not saved.")) }
+        lock.unlock()
+        c?.resume(with: result)
+    }
+}
+
 // MARK: - App detail sheet (AirShare layout)
 
 struct AppDetailSheet: View {
-    @ObservedObject private var liveTheme = AppTheme.shared   // re-read accent live (auto-cycle) without rebuilding
     let source: RepoSource
     let group: AppGroup
     @ObservedObject private var appStats = AppStatsStore.shared
@@ -1117,7 +1283,7 @@ struct AppDetailSheet: View {
     @State private var onDevice = false
     @State private var error: String?
 
-    private var blue: Color { Theme.accent }
+    private let blue = Color(red: 0.25, green: 0.55, blue: 1.0)
 
     private var detailTitleBar: some View {
         ZStack {
@@ -1173,7 +1339,7 @@ struct AppDetailSheet: View {
                 bottomBar.floatingGlassBar(edge: .bottom)
             }
         }
-        .background(Theme.bg.ignoresSafeArea())
+        .background(Color.black.ignoresSafeArea())
         .onAppear { selectedID = group.latest.id; refreshDevice() }
         .task {
             await AppStatsStore.shared.reportView(bundle: group.latest.bundle)
@@ -1206,7 +1372,8 @@ struct AppDetailSheet: View {
                         Text(app.description.isEmpty ? "No description." : app.description).font(.system(size: 13)).foregroundStyle(Theme.text)
                     }
                 }
-                .padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.white.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 14))
             }
             VStack(spacing: 6) {
                 stat("v\(app.version)", "VERSION")
@@ -1214,10 +1381,12 @@ struct AppDetailSheet: View {
                 stat(updatedText, "UPDATED")
                 stat(appStats.downloadsText(app), "DOWNLOADS")
                 stat(appStats.viewsText(app), "VIEWS")
+                stat(signed.entries.filter { $0.bundleID == app.bundle }.count.description, "SIGNED")
             }
             .frame(width: 74)
         }
-        .padding(.horizontal, 4).padding(.vertical, 10)
+        .padding(10)
+        .background(Color(white: 0.11)).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private func stat(_ v: String, _ k: String) -> some View {
@@ -1226,6 +1395,7 @@ struct AppDetailSheet: View {
             Text(k).font(.system(size: 8, weight: .semibold)).kerning(0.8).foregroundStyle(Theme.subtle)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 8)
+        .background(Color.white.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
     private var updatedText: String { ageText(app.updated) }
@@ -1254,7 +1424,7 @@ struct AppDetailSheet: View {
                 if sel { Image(systemName: "checkmark").font(.system(size: 16, weight: .bold)).foregroundStyle(blue) }
             }
             .padding(12)
-            .background(sel ? Theme.accent.opacity(0.10) : Color.clear)
+            .background(sel ? Color(red: 0.06, green: 0.09, blue: 0.16) : Color(white: 0.09))
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(sel ? blue.opacity(0.35) : Theme.stroke, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 16))
         }
@@ -1284,7 +1454,7 @@ struct AppDetailSheet: View {
                 }
             }
         }
-        .padding(.horizontal, 4).padding(.vertical, 12)
+        .padding(12).background(Color(white: 0.11)).clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     private var bottomBar: some View {
@@ -1292,7 +1462,7 @@ struct AppDetailSheet: View {
             Button { Task { await download() } } label: {
                 VStack(spacing: 4) {
                     if downloading { ProgressView().tint(blue).frame(height: 26) }
-                    else if onDevice { Image(systemName: "checkmark.circle.fill").font(.system(size: 26)) }
+                    else if onDevice { Image(systemName: "sdcard.fill").font(.system(size: 24)) }
                     else { Image(systemName: "arrow.down.circle").font(.system(size: 26)) }
                     Text(downloading ? "Downloading" : (onDevice ? "Downloaded" : "Download")).font(.system(size: 13, weight: .semibold))
                 }
@@ -1301,7 +1471,7 @@ struct AppDetailSheet: View {
             .disabled(downloading || app.downloadURL == nil)
             Spacer()
             VStack(spacing: 2) {
-                Text("MRZefv").font(.system(size: 14, weight: .bold)).foregroundStyle(Color(red: 1.0, green: 0.60, blue: 0.12)).lineLimit(1)
+                Text("MRZefv").font(.system(size: 14, weight: .bold)).foregroundStyle(.orange).lineLimit(1)
                 Text("Powered by \((source.url.host ?? source.name).uppercased())").font(.system(size: 9, weight: .semibold)).foregroundStyle(blue).lineLimit(1).minimumScaleFactor(0.7)
             }
             .frame(maxWidth: .infinity)
