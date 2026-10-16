@@ -415,7 +415,14 @@ nonisolated enum Signer {
         try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
         onLog?(">>> Extracting IPA…")
         let extractionStart = ContinuousClock.now
-        try fm.unzipItem(at: ipaURL, to: extractDir)
+        var fastUnpacked = false
+        do { try ZipFast.extract(ipa: ipaURL, to: extractDir); fastUnpacked = true }
+        catch {
+            // Fast path couldn't handle this IPA — start over with the general extractor.
+            try? fm.removeItem(at: extractDir)
+            try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
+            try fm.unzipItem(at: ipaURL, to: extractDir)
+        }
         let extractionSeconds = Double(extractionStart.duration(to: ContinuousClock.now).components.attoseconds) / 1e18 + Double(extractionStart.duration(to: ContinuousClock.now).components.seconds)
         let payload = extractDir.appendingPathComponent("Payload", isDirectory: true)
         guard let appURL = try fm.contentsOfDirectory(at: payload, includingPropertiesForKeys: nil)
@@ -498,7 +505,15 @@ nonisolated enum Signer {
         try? fm.removeItem(at: signed)
         onLog?(">>> Packaging signed IPA…")
         let packagingStart = ContinuousClock.now
-        try fm.zipItem(at: payload, to: signed, shouldKeepParent: true, compressionMethod: .none)
+        var packedFast = false
+        if fastUnpacked {
+            // Copy unchanged files' compressed bytes from the original; only signer-touched files are deflated.
+            do { try ZipFast.packDelta(root: extractDir, original: ipaURL, to: signed); packedFast = true }
+            catch { try? fm.removeItem(at: signed) }
+        }
+        if !packedFast {
+            try fm.zipItem(at: payload, to: signed, shouldKeepParent: true, compressionMethod: .none)
+        }
         let packagingSeconds = Double(packagingStart.duration(to: ContinuousClock.now).components.attoseconds) / 1e18 + Double(packagingStart.duration(to: ContinuousClock.now).components.seconds)
         let totalSeconds = Double(totalStart.duration(to: ContinuousClock.now).components.attoseconds) / 1e18 + Double(totalStart.duration(to: ContinuousClock.now).components.seconds)
         onLog?(String(format: ">>> Turbo timing: extract %.2fs · sign %.2fs · package %.2fs · total %.2fs", extractionSeconds, signingSeconds, packagingSeconds, totalSeconds))

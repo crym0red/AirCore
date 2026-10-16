@@ -328,6 +328,11 @@ final class NativeInstaller: ObservableObject {
             let fm = FileManager.default
             let size = (try? fm.attributesOfItem(atPath: ipa.path)[.size] as? Int64) ?? 0
             guard size > 30_000_000 else { return nil }
+            // Already compressed (the signer's fast packer): nothing to gain.
+            if let list = try? ZipDelta.entries(of: ipa) {
+                let u = list.reduce(UInt64(0)) { $0 + UInt64($1.uncomp) }, c = list.reduce(UInt64(0)) { $0 + UInt64($1.comp) }
+                if u > 0, c * 10 < u * 9 { return nil }
+            }
             if let original, fm.fileExists(atPath: original.path) {
                 let root = fm.temporaryDirectory.appendingPathComponent("native-pack-\(UUID().uuidString)", isDirectory: true)
                 try? fm.createDirectory(at: root, withIntermediateDirectories: true)

@@ -103,7 +103,7 @@ nonisolated enum ZipDelta {
 
         for e in signedEntries {
             guard pos < 3_500_000_000 else { throw Failure("IPA too large for the simple zip writer.") }
-            guard e.method == 0 else { throw Failure("Signed IPA is already compressed.") }
+            guard e.method == 0 || e.method == 8 else { throw Failure("Unsupported compression in the signed IPA.") }
             var headerOffset = pos
             let isDir = e.name.hasSuffix("/")
             var method: UInt16 = 0
@@ -120,6 +120,14 @@ nonisolated enum ZipDelta {
                 headerOffset = UInt64(rec.offset)
                 method = rec.entry.method; comp = rec.entry.comp; crc = rec.entry.crc
                 copied += Int64(comp); usedPrefix += 1
+            } else if e.method == 8 {
+                // Compressed by the signer's fast packer: copy those bytes as they are.
+                method = 8; comp = e.comp; crc = e.crc
+                let dataStart = try dataOffset(of: e, in: signedIn)
+                try write(localHeader(name: e.nameData, flags: utf8Flag, method: 8, time: e.time, date: e.date,
+                                      crc: crc, comp: comp, uncomp: uncomp), to: output, pos: &pos)
+                try copy(from: signedIn, offset: dataStart, length: UInt64(comp), to: output, pos: &pos)
+                copied += Int64(comp)
             } else if let o = originalByName[e.name], !isDir, uncomp > 0,
                o.crc == e.crc, o.uncomp == e.uncomp, (o.method == 0 || o.method == 8), o.flags & 0x1 == 0 {
                 // Unchanged file: copy the original's compressed bytes as they are.
@@ -220,7 +228,7 @@ nonisolated enum ZipDelta {
         return list
     }
 
-    private static func dataOffset(of e: Entry, in h: FileHandle) throws -> UInt64 {
+    static func dataOffset(of e: Entry, in h: FileHandle) throws -> UInt64 {
         try h.seek(toOffset: UInt64(e.offset))
         let head = try h.read(upToCount: 30) ?? Data()
         guard head.count == 30, u32(head, 0) == 0x0403_4b50 else { throw Failure("Bad local header.") }
@@ -229,7 +237,7 @@ nonisolated enum ZipDelta {
 
     // MARK: Writing
 
-    private static func localHeader(name: Data, flags: UInt16, method: UInt16, time: UInt16, date: UInt16,
+    static func localHeader(name: Data, flags: UInt16, method: UInt16, time: UInt16, date: UInt16,
                                     crc: UInt32, comp: UInt32, uncomp: UInt32) -> Data {
         var d = Data()
         d.append(le32(0x0403_4b50)); d.append(le16(20)); d.append(le16(flags)); d.append(le16(method))
@@ -238,11 +246,11 @@ nonisolated enum ZipDelta {
         return d
     }
 
-    private static func write(_ data: Data, to h: FileHandle, pos: inout UInt64) throws {
+    static func write(_ data: Data, to h: FileHandle, pos: inout UInt64) throws {
         try h.write(contentsOf: data); pos += UInt64(data.count)
     }
 
-    private static func copy(from src: FileHandle, offset: UInt64, length: UInt64, to dst: FileHandle, pos: inout UInt64) throws {
+    static func copy(from src: FileHandle, offset: UInt64, length: UInt64, to dst: FileHandle, pos: inout UInt64) throws {
         try src.seek(toOffset: offset)
         var remaining = length
         while remaining > 0 {
@@ -255,7 +263,7 @@ nonisolated enum ZipDelta {
     }
 
     /// Raw DEFLATE (what zip entries use) of `length` bytes at `offset`, appended to `dst`. Returns bytes written.
-    private static func deflate(from src: FileHandle, offset: UInt64, length: UInt64, to dst: FileHandle) throws -> UInt64 {
+    static func deflate(from src: FileHandle, offset: UInt64, length: UInt64, to dst: FileHandle) throws -> UInt64 {
         try src.seek(toOffset: offset)
         var stream = compression_stream(dst_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 1)!, dst_size: 0,
                                         src_ptr: UnsafePointer<UInt8>(bitPattern: 1)!, src_size: 0, state: nil)
@@ -301,15 +309,15 @@ nonisolated enum ZipDelta {
 
     // MARK: Little-endian helpers
 
-    private static func le16(_ v: UInt16) -> Data { Data([UInt8(v & 0xFF), UInt8(v >> 8)]) }
-    private static func le32(_ v: UInt32) -> Data {
+    static func le16(_ v: UInt16) -> Data { Data([UInt8(v & 0xFF), UInt8(v >> 8)]) }
+    static func le32(_ v: UInt32) -> Data {
         Data([UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8(v >> 24)])
     }
-    private static func u16(_ d: Data, _ o: Int) -> UInt16 {
+    static func u16(_ d: Data, _ o: Int) -> UInt16 {
         let s = d.startIndex + o
         return UInt16(d[s]) | UInt16(d[s + 1]) << 8
     }
-    private static func u32(_ d: Data, _ o: Int) -> UInt32 {
+    static func u32(_ d: Data, _ o: Int) -> UInt32 {
         let s = d.startIndex + o
         return UInt32(d[s]) | UInt32(d[s + 1]) << 8 | UInt32(d[s + 2]) << 16 | UInt32(d[s + 3]) << 24
     }
